@@ -120,7 +120,7 @@ int _tmain(int argc, _TCHAR* argv[])
         exit(1);
     }
 
-    UpdateLarge("update.db");
+    UpdateLarge(argv[1]);
 
 //     CreateLargeDB(argv[1]);
 
