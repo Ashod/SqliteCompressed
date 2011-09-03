@@ -231,9 +231,6 @@
     <ClCompile Include="src\where.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\test_vfs.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\test_vfstrace.c">
       <Filter>Source Files</Filter>
     </ClCompile>
