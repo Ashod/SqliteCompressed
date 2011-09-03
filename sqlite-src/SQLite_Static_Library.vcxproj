@@ -138,7 +138,6 @@
     <ClCompile Include="src\resolve.c" />
     <ClCompile Include="src\rowset.c" />
     <ClCompile Include="src\select.c" />
-    <ClCompile Include="src\shell.c" />
     <ClCompile Include="src\status.c" />
     <ClCompile Include="src\table.c" />
     <ClCompile Include="src\tokenize.c" />

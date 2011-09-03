@@ -177,9 +177,6 @@
     <ClCompile Include="src\select.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\shell.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\status.c">
       <Filter>Source Files</Filter>
     </ClCompile>
