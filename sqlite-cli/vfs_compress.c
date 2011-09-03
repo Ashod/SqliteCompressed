@@ -36,11 +36,11 @@
 
 typedef struct vfsc_chunk vfsc_chunk;
 struct vfsc_chunk {
-    int offset;
+    sqlite_int64 offset;
     int origSize;
-    void* pOrigData;
+    char pOrigData[CHUNK_SIZE_BYTES];
     int compSize;
-    void* pCompData;
+    char pCompData[CHUNK_SIZE_BYTES];
 };
 
 
@@ -243,10 +243,26 @@ static int vfstraceRead(
 ){
   vfstrace_file *p = (vfstrace_file *)pFile;
   vfstrace_info *pInfo = p->pInfo;
-  int rc;
+  int rc = 0;
+  sqlite_int64 chunkOffset;
+
   vfstrace_printf(pInfo, "%s.xRead(%s,n=%d,ofst=%lld)",
                   pInfo->zVfsName, p->zFName, iAmt, iOfst);
-  rc = p->pReal->pMethods->xRead(p->pReal, zBuf, iAmt, iOfst);
+  
+  chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
+  if (pInfo->pCache->offset != chunkOffset || pInfo->pCache->pOrigData == NULL || pInfo->pCache->origSize == 0)
+  {
+     // Not cached.        
+     rc = p->pReal->pMethods->xRead(p->pReal, pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
+     pInfo->pCache->offset = chunkOffset;
+     pInfo->pCache->origSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
+     pInfo->pCache->compSize = pInfo->pCache->origSize; //TODO: Support compression!
+  }
+
+  // Copy the data from the cache.
+  //TODO: Check if the required data crosses chunk boundaries.
+  memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
+
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
 }
