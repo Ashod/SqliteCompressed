@@ -140,6 +140,8 @@
     <ClCompile Include="src\select.c" />
     <ClCompile Include="src\status.c" />
     <ClCompile Include="src\table.c" />
+    <ClCompile Include="src\test_vfs.c" />
+    <ClCompile Include="src\test_vfstrace.c" />
     <ClCompile Include="src\tokenize.c" />
     <ClCompile Include="src\trigger.c" />
     <ClCompile Include="src\update.c" />
