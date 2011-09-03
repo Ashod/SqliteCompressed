@@ -8,11 +8,8 @@
 #include <sqlite3.h>
 #include <Windows.h>
 
-extern "C" int vfstrace_register(
-    const char *zTraceName,
-    const char *zOldVfsName,
-    int (*xOut)(const char*,void*),
-    void *pOutArg,
+extern "C" int vfscompress_register(
+    int trace,
     int makeDefault
     );
 
@@ -37,8 +34,6 @@ void CreateLargeDB(_TCHAR* dbFilename)
     char **result;
     int nrow;
     int ncol;
-
-    vfstrace_register("trace",0,(int(*)(const char*,void*))fputs,stderr,1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -274,7 +269,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
-    vfstrace_register("trace",0,(int(*)(const char*,void*))fputs,stderr,1);
+    vfscompress_register(1,1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
