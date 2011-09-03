@@ -56,34 +56,34 @@ fast_install=needless
 
 # The host system.
 host_alias=
-host=i686-pc-cygwin
-host_os=cygwin
+host=i686-pc-mingw32
+host_os=mingw32
 
 # The build system.
 build_alias=
-build=i686-pc-cygwin
-build_os=cygwin
+build=i686-pc-mingw32
+build_os=mingw32
 
 # A sed program that does not truncate output.
-SED="/usr/bin/sed"
+SED="/bin/sed"
 
 # Sed that helps us avoid accidentally triggering echo(1) options like -n.
 Xsed="$SED -e 1s/^X//"
 
 # A grep program that handles long lines.
-GREP="/usr/bin/grep"
+GREP="/bin/grep"
 
 # An ERE matcher.
-EGREP="/usr/bin/grep -E"
+EGREP="/bin/grep -E"
 
 # A literal string matcher.
-FGREP="/usr/bin/grep -F"
+FGREP="/bin/grep -F"
 
 # A BSD- or MS-compatible name lister.
-NM="/usr/bin/nm -B"
+NM="/mingw/bin/nm"
 
 # Whether we need soft or hard links.
-LN_S="ln -s"
+LN_S="cp -p"
 
 # What is the maximum length of a command?
 max_cmd_len=8192
@@ -135,7 +135,7 @@ LTCC="gcc"
 LTCFLAGS=" -g -O2 -DSQLITE_OS_WIN=1"
 
 # Take the output of nm and produce a listing of raw symbols and C names.
-global_symbol_pipe="sed -n -e 's/^.*[	 ]\\([ABCDGIRSTW][ABCDGIRSTW]*\\)[	 ][	 ]*_\\([_A-Za-z][_A-Za-z0-9]*\\)\$/\\1 _\\2 \\2/p'"
+global_symbol_pipe="sed -n -e 's/^.*[	 ]\\([ABCDGIRSTW][ABCDGIRSTW]*\\)[	 ][	 ]*_\\([_A-Za-z][_A-Za-z0-9]*\\)\\{0,1\\}\$/\\1 _\\2 \\2/p'"
 
 # Transform the output of nm in a proper C declaration.
 global_symbol_to_cdecl="sed -n -e 's/^T .* \\(.*\\)\$/extern int \\1();/p' -e 's/^[ABCDGIRSTW]* .* \\(.*\\)\$/extern char \\1;/p'"
@@ -215,7 +215,7 @@ libname_spec="lib\$name"
 library_names_spec="\$libname.dll.a"
 
 # The coded name of the library, if different from the real name.
-soname_spec="\`echo \${libname} | sed -e s/^lib/cyg/\`\`echo \${release} | \$SED -e s/[.]/-/g\`\${versuffix}\${shared_ext}"
+soname_spec="\${libname}\`echo \${release} | \$SED -e s/[.]/-/g\`\${versuffix}\${shared_ext}"
 
 # Command to use after installation of a shared archive.
 postinstall_cmds="base_file=\\\`basename \\\${file}\\\`~
@@ -244,7 +244,7 @@ finish_eval=""
 hardcode_into_libs=no
 
 # Compile-time system search path for libraries.
-sys_lib_search_path_spec="/usr/lib /lib/w32api /lib /usr/local/lib"
+sys_lib_search_path_spec=" =c:/mingw/bin/../lib/gcc/mingw32/4.5.2/ c:/mingw/bin/../lib/gcc/ c:/mingw/bin/../lib/gcc/mingw32/4.5.2/../../../../mingw32/lib/mingw32/4.5.2/ c:/mingw/bin/../lib/gcc/mingw32/4.5.2/../../../../mingw32/lib/ c:/mingw/bin/../lib/gcc/mingw32/4.5.2/../../../mingw32/4.5.2/ c:/mingw/bin/../lib/gcc/mingw32/4.5.2/../../../ /mingw/lib/mingw32/4.5.2/ /mingw/lib/"
 
 # Run-time system search path for libraries.
 sys_lib_dlsearch_path_spec="/lib /usr/lib"
@@ -264,7 +264,7 @@ striplib="strip --strip-unneeded"
 
 
 # The linker used to build libraries.
-LD="/usr/i686-pc-cygwin/bin/ld.exe"
+LD="c:/mingw/mingw32/bin/ld.exe"
 
 # Commands used to build an old-style archive.
 old_archive_cmds="\$AR \$AR_FLAGS \$oldlib\$oldobjs~\$RANLIB \$oldlib"

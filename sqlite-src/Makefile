@@ -41,11 +41,11 @@ TCC += -DNDEBUG
 
 # Compiler options needed for programs that use the TCL library.
 #
-TCC += 
+TCC += -IC:/tools/Tcl/include
 
 # The library that programs using TCL must link against.
 #
-LIBTCL = -ltcl84 
+LIBTCL = -LC:/tools/Tcl/lib -ltcl85 -luser32 -ladvapi32 -lws2_32
 
 # Compiler options needed for programs that use the readline() library.
 #
@@ -61,7 +61,7 @@ TCC += -DSQLITE_THREADSAFE=1
 
 # Any target libraries which libsqlite must be linked against
 # 
-TLIBS = 
+TLIBS = -lpthread 
 
 # Flags controlling use of the in memory btree implementation
 #
@@ -108,7 +108,7 @@ TCLSH_CMD = tclsh
 
 # Where do we want to install the tcl plugin
 #
-TCLLIBDIR = C:/cygwin/usr/share/tcl8.4/sqlite3
+TCLLIBDIR = c:/tools/Tcl/lib/tcl8.5/sqlite3
 
 # The suffix used on shared libraries.  Ex:  ".dll", ".so", ".dylib"
 #
@@ -142,7 +142,7 @@ libdir = ${exec_prefix}/lib
 pkgconfigdir = $(libdir)/pkgconfig
 bindir = ${exec_prefix}/bin
 includedir = ${prefix}/include
-INSTALL = /usr/bin/install -c
+INSTALL = /bin/install -c
 LIBTOOL = ./libtool
 ALLOWRELEASE = 
 
@@ -489,7 +489,7 @@ libsqlite3.la:	$(LIBOBJ)
 
 libtclsqlite3.la:	tclsqlite.lo libsqlite3.la
 	$(LTLINK) -o $@ tclsqlite.lo \
-		libsqlite3.la -ltclstub84 $(TLIBS) \
+		libsqlite3.la -LC:/tools/Tcl/lib -ltclstub85 $(TLIBS) \
 		-rpath "$(TCLLIBDIR)" \
 		-version-info "8:6:8" \
 		-avoid-version

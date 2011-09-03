@@ -31,3 +31,5 @@ ipch/
 sqlite.opensdf
 sqlite.sdf
 sqlite-src/.libs/
+*.db
+*.o

@@ -3018,6 +3018,7 @@ static int DbMain(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv){
 **
 ** The EXTERN macros are required by TCL in order to work on windows.
 */
+#define EXTERN
 EXTERN int Sqlite3_Init(Tcl_Interp *interp){
   Tcl_InitStubs(interp, "8.4", 0);
   Tcl_CreateObjCommand(interp, "sqlite3", (Tcl_ObjCmdProc*)DbMain, 0, 0);

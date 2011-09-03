@@ -2,13 +2,13 @@
 /* config.h.in.  Generated from configure.ac by autoheader.  */
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
-#define HAVE_DLFCN_H 1
+/* #undef HAVE_DLFCN_H */
 
 /* Define to 1 if you have the `fdatasync' function. */
-#define HAVE_FDATASYNC 1
+/* #undef HAVE_FDATASYNC */
 
 /* Define to 1 if you have the `gmtime_r' function. */
-#define HAVE_GMTIME_R 1
+/* #undef HAVE_GMTIME_R */
 
 /* Define to 1 if the system has the type `int16_t'. */
 #define HAVE_INT16_T 1
@@ -29,7 +29,7 @@
 #define HAVE_INTTYPES_H 1
 
 /* Define to 1 if you have the `localtime_r' function. */
-#define HAVE_LOCALTIME_R 1
+/* #undef HAVE_LOCALTIME_R */
 
 /* Define to 1 if you have the `localtime_s' function. */
 /* #undef HAVE_LOCALTIME_S */
