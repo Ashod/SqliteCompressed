@@ -13,8 +13,10 @@ extern "C" int vfscompress_register(
     int makeDefault
     );
 
+BOOL GetSparseFileSize(LPCTSTR lpFileName);
 
-static int callback(void *NotUsed, int argc, char **argv, char **azColName){
+static int callback(void *NotUsed, int argc, char **argv, char **azColName)
+{
     int i;
     NotUsed=0;
 
@@ -22,6 +24,39 @@ static int callback(void *NotUsed, int argc, char **argv, char **azColName){
         printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
     }
     printf("\n");
+    return 0;
+}
+
+const char* GenerateText(int length)
+{
+    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-";
+    const int ALPHA_COUNT = sizeof(alpha) - 1;
+
+    char* text = new char[length + 1];
+    for (int i = 0; i < length; ++i)
+    {
+        text[i] = alpha[i % ALPHA_COUNT];
+    }
+
+    text[length] = '\0';
+    return text;
+}
+
+const char* expected_value;
+static int callback_check(void *NotUsed, int argc, char **argv, char **azColName)
+{
+    int i;
+    NotUsed=0;
+
+    for(i=0; i<argc; i++)
+    {
+        //printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
+        if (strcmp(expected_value, argv[i]) != 0)
+        {
+            printf("Error: value mismatch.\nExpected: %s\n Got: %s\n", expected_value, argv[i]);
+        }
+    }
+
     return 0;
 }
 
@@ -35,6 +70,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
+    DeleteFile(dbFilename);
     vfscompress_register(1,1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -43,25 +79,40 @@ void CreateLargeDB(_TCHAR* dbFilename)
         exit(1);
     }
 
-    const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num double, timeEnter DATE);";
+    const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num INT, timeEnter DATE);";
     rc = sqlite3_exec(db, CREATE_TABLE_COMMAND, callback, 0, &zErrMsg);
     
-    int c = 10;
-    while (c-- && (rc == SQLITE_OK))
+    const int ROW_COUNT = 5;
+    const int MAX_DATA_SIZE = 1 * 1024 * 1024;
+    const char* test_data[ROW_COUNT];
+    char* buffer = new char[MAX_DATA_SIZE + 128];
+    const char const* INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
+
+    for (int c = 0; (c < ROW_COUNT) && (rc == SQLITE_OK); ++c)
     {
-        const char const* INSERT_COMMAND = "insert into t1 (data, num) values ('This is sample data', %d);";
-        char buffer[1024];
-        sprintf(buffer, INSERT_COMMAND, rand()*rand()+rand());
+        int data_size = ((int)rand() * (int)rand()) % MAX_DATA_SIZE;
+        test_data[c] = GenerateText(data_size);
+        sprintf(buffer, INSERT_COMMAND, test_data[c], c);
+        printf("%d) Inserting %d bytes...", c, data_size);
         rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
     }
 
-    rc = sqlite3_exec(db, "SELECT num FROM t1 WHERE data LIKE '%sample%'", callback, 0, &zErrMsg);
-
+    printf(">>>> Reading\n");
+    const char const* SELECT_COMMAND = "SELECT data FROM t1 WHERE num = %d;";
+    
+    for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
+    {
+        sprintf(buffer, SELECT_COMMAND, c);
+        expected_value = test_data[c];
+        rc = sqlite3_exec(db, buffer, callback_check, 0, &zErrMsg);
+    }
 
     if( rc!=SQLITE_OK ){
         fprintf(stderr, "SQL error: %s\n", zErrMsg);
     }
     sqlite3_close(db);
+
+    GetSparseFileSize(dbFilename);
 }
 
 void UpdateLarge(_TCHAR* dbFilename)
