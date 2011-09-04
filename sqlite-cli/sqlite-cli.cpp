@@ -35,6 +35,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
+    vfscompress_register(1,1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -45,7 +46,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num double, timeEnter DATE);";
     rc = sqlite3_exec(db, CREATE_TABLE_COMMAND, callback, 0, &zErrMsg);
     
-    int c = 100000;
+    int c = 10;
     while (c-- && (rc == SQLITE_OK))
     {
         const char const* INSERT_COMMAND = "insert into t1 (data, num) values ('This is sample data', %d);";
@@ -54,22 +55,8 @@ void CreateLargeDB(_TCHAR* dbFilename)
         rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
     }
 
-    //     rc = sqlite3_get_table(
-    //         db,              /* An open database */
-    //         "select * from stuff",       /* SQL to be executed */
-    //         &result,       /* Result written to a char *[]  that this points to */
-    //         &nrow,             /* Number of result rows written here */
-    //         &ncol,          /* Number of result columns written here */
-    //         &zErrMsg          /* Error msg written here */
-    //         );
-    // 
-    //     printf("nrow=%d ncol=%d\n",nrow,ncol);
-    //     for(i=0 ; i < nrow+ncol; ++i)
-    //         printf("%s ",result[i]);
-    // 
-    // 
-    // 
-    //    sqlite3_free_table(result);
+    rc = sqlite3_exec(db, "SELECT num FROM t1 WHERE data LIKE '%sample%'", callback, 0, &zErrMsg);
+
 
     if( rc!=SQLITE_OK ){
         fprintf(stderr, "SQL error: %s\n", zErrMsg);
@@ -297,7 +284,8 @@ int _tmain(int argc, _TCHAR* argv[])
     int nrow;
     int ncol;
 
-    QueryWikideskDB("Z:\\wikidesk.db");
+    //QueryWikideskDB("Z:\\wikidesk.db");
+    CreateLargeDB("Z:\\test.db");
     return 0;
 
 
