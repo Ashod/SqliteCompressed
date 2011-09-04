@@ -232,6 +232,33 @@ static int vfstraceClose(sqlite3_file *pFile){
   return rc;
 }
 
+static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
+{
+    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
+    pChunk->offset = chunkOffset;
+    pChunk->origSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
+    pChunk->compSize = pChunk->origSize; //TODO: Support compression!
+    return rc;
+}
+
+/*
+** Finds the chunk in cache or reads from disk.
+*/
+static int GetCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
+{
+    int rc = 0;
+    if (pFile->pInfo->pCache->offset != chunkOffset ||
+        pFile->pInfo->pCache->pOrigData == NULL ||
+        pFile->pInfo->pCache->origSize == 0)
+    {
+        // Not cached, read from disk and cache.
+        rc = ReadCache(pFile, chunkOffset, pFile->pInfo->pCache);
+    }
+
+    *pChunk = pFile->pInfo->pCache;
+    return rc;
+}
+
 /*
 ** Read data from an vfstrace-file.
 */
@@ -250,14 +277,7 @@ static int vfstraceRead(
                   pInfo->zVfsName, p->zFName, iAmt, iOfst);
   
   chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
-  if (pInfo->pCache->offset != chunkOffset || pInfo->pCache->pOrigData == NULL || pInfo->pCache->origSize == 0)
-  {
-     // Not cached.        
-     rc = p->pReal->pMethods->xRead(p->pReal, pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
-     pInfo->pCache->offset = chunkOffset;
-     pInfo->pCache->origSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
-     pInfo->pCache->compSize = pInfo->pCache->origSize; //TODO: Support compression!
-  }
+  rc = GetCache(p, chunkOffset, &pInfo->pCache);
 
   // Copy the data from the cache.
   //TODO: Check if the required data crosses chunk boundaries.
@@ -279,9 +299,21 @@ static int vfstraceWrite(
   vfstrace_file *p = (vfstrace_file *)pFile;
   vfstrace_info *pInfo = p->pInfo;
   int rc;
+  sqlite_int64 chunkOffset;
+
   vfstrace_printf(pInfo, "%s.xWrite(%s,n=%d,ofst=%lld)",
                   pInfo->zVfsName, p->zFName, iAmt, iOfst);
-  rc = p->pReal->pMethods->xWrite(p->pReal, zBuf, iAmt, iOfst);
+
+  // Get the cache chunk.
+  chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
+  rc = GetCache(p, chunkOffset, &pInfo->pCache);
+  
+  // Write the new data.
+  memcpy(pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), zBuf, iAmt);
+
+  // Write the whole chunk.
+  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
+
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
 }
