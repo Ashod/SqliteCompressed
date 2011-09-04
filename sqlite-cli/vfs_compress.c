@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sqlite3.h"
+#include "fastlz.c"
 
 /*
 ** The chunk size is the compression unit.
@@ -234,10 +235,15 @@ static int vfstraceClose(sqlite3_file *pFile){
 
 static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
 {
-    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
+    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, CHUNK_SIZE_BYTES, chunkOffset);
+    if (rc == SQLITE_IOERR_READ || rc == SQLITE_FULL)
+    {
+        return rc;
+    }
+
     pChunk->offset = chunkOffset;
-    pChunk->origSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
-    pChunk->compSize = pChunk->origSize; //TODO: Support compression!
+    pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
+    pChunk->origSize = fastlz_decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
     return rc;
 }
 
@@ -310,9 +316,15 @@ static int vfstraceWrite(
   
   // Write the new data.
   memcpy(pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), zBuf, iAmt);
+  pInfo->pCache->origSize = max(pInfo->pCache->origSize, iOfst % CHUNK_SIZE_BYTES);
+
+  // Compress...
+  pInfo->pCache->compSize = fastlz_compress(pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, pInfo->pCache->pCompData);
 
   // Write the whole chunk.
-  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, chunkOffset);
+  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES, chunkOffset);
+  
+  //TODO: Mark the remaining chunk as zero.
 
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
