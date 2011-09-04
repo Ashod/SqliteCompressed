@@ -27,6 +27,7 @@
 #include <string.h>
 #include "sqlite3.h"
 #include "fastlz.c"
+#include <Windows.h>
 
 /*
 ** The chunk size is the compression unit.
@@ -69,6 +70,7 @@ struct vfstrace_file {
   vfstrace_info *pInfo;     /* The trace-VFS to which this file belongs */
   const char *zFName;       /* Base name of the file */
   sqlite3_file *pReal;      /* The real underlying file */
+  HANDLE hFile;             /* The underlying file handle */
 };
 
 /*
@@ -223,6 +225,10 @@ static int vfstraceClose(sqlite3_file *pFile){
   vfstrace_file *p = (vfstrace_file *)pFile;
   vfstrace_info *pInfo = p->pInfo;
   int rc;
+
+  CloseHandle(p->hFile);
+  p->hFile = 0;
+
   vfstrace_printf(pInfo, "%s.xClose(%s)", pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xClose(p->pReal);
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
@@ -241,6 +247,7 @@ static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
         return rc;
     }
 
+    memset(pChunk->pOrigData, 0, CHUNK_SIZE_BYTES);
     pChunk->offset = chunkOffset;
     pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
     pChunk->origSize = fastlz_decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
@@ -293,6 +300,42 @@ static int vfstraceRead(
   return rc;
 }
 
+DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
+{
+    FILE_ZERO_DATA_INFORMATION fzdi;
+    DWORD dwTemp;
+    BOOL res;
+
+    if (size <= 0)
+    {
+        return 0;
+    }
+
+    // Specify the starting and the ending address (not the size) of the 
+    // sparse zero block
+    fzdi.FileOffset.QuadPart = start;
+    fzdi.BeyondFinalZero.QuadPart = start + size;
+
+    // Mark the range as sparse zero block
+    SetLastError(0);
+    res = DeviceIoControl(hSparseFile, 
+                            FSCTL_SET_ZERO_DATA, 
+                            &fzdi, 
+                            sizeof(fzdi), 
+                            NULL, 
+                            0, 
+                            &dwTemp, 
+                            NULL);
+    
+    if (res)
+    {
+        return 0; //Sucess
+    }
+
+    // return the error value
+    return GetLastError();
+}
+
 /*
 ** Write data to an vfstrace-file.
 */
@@ -322,9 +365,8 @@ static int vfstraceWrite(
   pInfo->pCache->compSize = fastlz_compress(pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, pInfo->pCache->pCompData);
 
   // Write the whole chunk.
-  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES, chunkOffset);
-  
-  //TODO: Mark the remaining chunk as zero.
+  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
+  SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
 
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
@@ -563,6 +605,35 @@ static int vfstraceShmUnmap(sqlite3_file *pFile, int delFlag){
   return rc;
 }
 
+HANDLE MakeSparseFile(const char *zName)
+{
+    // Use CreateFile as you would normally - Create file with whatever flags 
+    //and File Share attributes that works for you
+    DWORD dwTemp;
+    DWORD res;
+    HANDLE hSparseFile = CreateFile(zName, 
+        GENERIC_READ|GENERIC_WRITE, 
+        FILE_SHARE_READ|FILE_SHARE_WRITE, 
+        NULL, 
+        OPEN_ALWAYS, 
+        FILE_ATTRIBUTE_NORMAL, 
+        NULL);
+
+    if (hSparseFile == INVALID_HANDLE_VALUE) 
+    {
+        return hSparseFile;
+    }
+
+    res = DeviceIoControl(hSparseFile, 
+                            FSCTL_SET_SPARSE, 
+                            NULL, 
+                            0, 
+                            NULL, 
+                            0, 
+                            &dwTemp, 
+                            NULL);
+    return hSparseFile;
+}
 
 
 /*
@@ -583,6 +654,10 @@ static int vfstraceOpen(
   p->zFName = zName ? fileTail(zName) : "<temp>";
   p->pReal = (sqlite3_file *)&p[1];
   rc = pRoot->xOpen(pRoot, zName, p->pReal, flags, pOutFlags);
+
+  // Now reopen the file and mark it sparse.
+  p->hFile = MakeSparseFile(zName);
+
   vfstrace_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
                   pInfo->zVfsName, p->zFName, flags);
   if( p->pReal->pMethods ){
@@ -810,8 +885,8 @@ int vfscompress_register(
   int nName;
   int nByte;
 
-  // Find the default VFS.
-  pRoot = sqlite3_vfs_find(0);
+  // Find the windows VFS.
+  pRoot = sqlite3_vfs_find("win32");
   if( pRoot==0 ) return SQLITE_NOTFOUND;
   nName = strlen("vfscompress");
   nByte = sizeof(*pNew) + sizeof(*pInfo) + nName + 1;
