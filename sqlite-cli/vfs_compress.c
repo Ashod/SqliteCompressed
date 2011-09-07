@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sqlite3.h"
-#include "fastlz.c"
+#include "zlib.h"
 #include <Windows.h>
 
 /*
@@ -36,13 +36,22 @@
 */
 #define CHUNK_SIZE_BYTES    (4 * 64 * 1024)
 
+enum state
+{
+    empty,          //< no data at all.
+    uncompressed,   //< new data not compressed.
+    unwritten,      //< compressed data in memory.
+    cached          //< compressed data flushed.
+};
+
 typedef struct vfsc_chunk vfsc_chunk;
 struct vfsc_chunk {
     sqlite_int64 offset;
     int origSize;
-    char pOrigData[CHUNK_SIZE_BYTES];
     int compSize;
-    char pCompData[CHUNK_SIZE_BYTES];
+    char pOrigData[CHUNK_SIZE_BYTES + 1024];
+    char pCompData[CHUNK_SIZE_BYTES + 1024];
+    char state;
 };
 
 
@@ -113,6 +122,81 @@ static int vfstraceSetSystemCall(sqlite3_vfs*,const char*, sqlite3_syscall_ptr);
 static sqlite3_syscall_ptr vfstraceGetSystemCall(sqlite3_vfs*, const char *);
 static const char *vfstraceNextSystemCall(sqlite3_vfs*, const char *zName);
 
+static int CompressionLevel = Z_DEFAULT_COMPRESSION;
+
+/*
+** Compression interface.
+** Returns the output size in bytes.
+*/
+static int Compress(const void* input, int input_length, void* output, int max_output_length)
+{
+    int ret;
+    int output_length;
+
+    z_stream strm;
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    ret = deflateInit(&strm, CompressionLevel);
+    if (ret != Z_OK)
+    {
+        return -1;
+    }
+
+    strm.avail_in = input_length;
+    strm.next_in = (Bytef*)input;
+    strm.avail_out = max_output_length;
+    strm.next_out = (Bytef*)output;
+    ret = deflate(&strm, Z_FINISH);    /* no bad return value */
+
+    output_length = max_output_length - strm.avail_out;
+    (void)deflateEnd(&strm);
+
+    {
+        char dout[CHUNK_SIZE_BYTES];
+        int dec = Decompress(output, CHUNK_SIZE_BYTES, dout, CHUNK_SIZE_BYTES);
+        if (dec != input_length)
+        {
+            printf("ERROR: Decompression failure!\n");
+            exit(1);
+        }
+    }
+
+    return output_length;
+}
+
+/*
+** Decompression interface.
+** Returns the output size in bytes.
+*/
+static int Decompress(const void* input, int input_length, void* output, int max_output_length)
+{
+    int ret;
+    unsigned output_length;
+    z_stream strm;
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    strm.avail_in = 0;
+    strm.next_in = Z_NULL;
+    ret = inflateInit(&strm);
+    if (ret != Z_OK)
+    {
+        return -1;
+    }
+    
+    strm.avail_in = input_length;
+    strm.next_in = (Bytef*)input;
+    strm.avail_out = max_output_length;
+    strm.next_out = (Bytef*)output;
+    ret = inflate(&strm, Z_NO_FLUSH);
+    
+    output_length = max_output_length - strm.avail_out;
+    (void)inflateEnd(&strm);
+    
+    return output_length;
+}
+
 /*
 ** Return a pointer to the tail of the pathname.  Examples:
 **
@@ -125,6 +209,18 @@ static const char *fileTail(const char *z){
   i = strlen(z)-1;
   while( i>0 && z[i-1]!='/' ){ i--; }
   return &z[i];
+}
+
+static int strTailCompare(const char* str1, const char* str2)
+{
+    int size1 = strlen(str1);
+    int size2 = strlen(str2);
+    if (size1 <= size2)
+    {
+        return strcmp(str1, str2);
+    }
+
+    return strcmp(str1 + (size1 - size2), str2);
 }
 
 /*
@@ -246,11 +342,25 @@ static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     {
         return rc;
     }
+   
+    if (pChunk->pCompData[0] == 0)
+    {
+        // The first byte should contain the length, hence can't be zero for compressed streams.
+        pChunk->compSize = 0;
+        pChunk->origSize = 0;
+        //memset(pChunk->pCompData, 0, CHUNK_SIZE_BYTES);
+    }
+    else
+    {
+        pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
+        pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
+        vfstrace_printf(pFile->pInfo, "Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
+    }
 
-    memset(pChunk->pOrigData, 0, CHUNK_SIZE_BYTES);
     pChunk->offset = chunkOffset;
-    pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
-    pChunk->origSize = fastlz_decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
+    pChunk->state = cached;
+    memset(pChunk->pOrigData + pChunk->origSize, 0, CHUNK_SIZE_BYTES - pChunk->origSize);
+
     return rc;
 }
 
@@ -261,8 +371,7 @@ static int GetCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
 {
     int rc = 0;
     if (pFile->pInfo->pCache->offset != chunkOffset ||
-        pFile->pInfo->pCache->pOrigData == NULL ||
-        pFile->pInfo->pCache->origSize == 0)
+        pFile->pInfo->pCache->state == empty)
     {
         // Not cached, read from disk and cache.
         rc = ReadCache(pFile, chunkOffset, pFile->pInfo->pCache);
@@ -286,21 +395,31 @@ static int vfstraceRead(
   int rc = 0;
   sqlite_int64 chunkOffset;
 
-  vfstrace_printf(pInfo, "%s.xRead(%s,n=%d,ofst=%lld)",
-                  pInfo->zVfsName, p->zFName, iAmt, iOfst);
-  
-  chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
-  rc = GetCache(p, chunkOffset, &pInfo->pCache);
+  if (p->hFile != 0)
+  {
+      chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
+      rc = GetCache(p, chunkOffset, &pInfo->pCache);
 
-  // Copy the data from the cache.
-  //TODO: Check if the required data crosses chunk boundaries.
-  memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
+      // Copy the data from the cache.
+      //TODO: Check if the required data crosses chunk boundaries.
+      memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
+
+      vfstrace_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
+          pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      vfstrace_printf(pInfo, "  Chunk=%lld", chunkOffset);
+  }
+  else
+  {
+      vfstrace_printf(pInfo, "%s.xRead(%s,n=%d,ofst=%lld)",
+          pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      rc = p->pReal->pMethods->xRead(p->pReal, zBuf, iAmt, iOfst);
+  }
 
   vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
 }
 
-DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
+static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
 {
     FILE_ZERO_DATA_INFORMATION fzdi;
     DWORD dwTemp;
@@ -350,25 +469,43 @@ static int vfstraceWrite(
   int rc;
   sqlite_int64 chunkOffset;
 
-  vfstrace_printf(pInfo, "%s.xWrite(%s,n=%d,ofst=%lld)",
-                  pInfo->zVfsName, p->zFName, iAmt, iOfst);
+  if (p->hFile != 0)
+  {
+      // Get the cache chunk.
+      int offsetInChunk = iOfst % CHUNK_SIZE_BYTES;
+      chunkOffset = iOfst - offsetInChunk;
+      rc = GetCache(p, chunkOffset, &pInfo->pCache);
 
-  // Get the cache chunk.
-  chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
-  rc = GetCache(p, chunkOffset, &pInfo->pCache);
-  
-  // Write the new data.
-  memcpy(pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), zBuf, iAmt);
-  pInfo->pCache->origSize = max(pInfo->pCache->origSize, iOfst % CHUNK_SIZE_BYTES);
+      // Write the new data.
+      memcpy(pInfo->pCache->pOrigData + offsetInChunk, zBuf, iAmt);
+      pInfo->pCache->origSize = max(pInfo->pCache->origSize, offsetInChunk + iAmt);
+      if (pInfo->pCache->origSize > CHUNK_SIZE_BYTES)
+      {
+          printf("ERROR: CHUNK OVERRUN!!!!\n");
+          exit(1);
+      }
 
-  // Compress...
-  pInfo->pCache->compSize = fastlz_compress(pInfo->pCache->pOrigData, CHUNK_SIZE_BYTES, pInfo->pCache->pCompData);
+      // Compress...
+      pInfo->pCache->compSize = Compress(pInfo->pCache->pOrigData, pInfo->pCache->origSize, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES);
+      vfstrace_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
 
-  // Write the whole chunk.
-  rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
-  SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
+      // Write the chunk.
+      rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
+      SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
 
-  vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+      //vfstrace_printf(pInfo, "> %s.xWrite(%s,n=%d,ofst=%lld)",
+      //    pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      //vfstrace_printf(pInfo, "  Chunk=%lld, Data=%d bytes", chunkOffset, pInfo->pCache->compSize);
+      //vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+  }
+  else
+  {
+      vfstrace_printf(pInfo, "%s.xWrite(%s,n=%d,ofst=%lld)",
+          pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      rc = p->pReal->pMethods->xWrite(p->pReal, zBuf, iAmt, iOfst);
+      vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+  }
+
   return rc;
 }
 
@@ -655,13 +792,22 @@ static int vfstraceOpen(
   p->pReal = (sqlite3_file *)&p[1];
   rc = pRoot->xOpen(pRoot, zName, p->pReal, flags, pOutFlags);
 
-  // Now reopen the file and mark it sparse.
-  p->hFile = MakeSparseFile(zName);
+  if (strTailCompare(p->zFName, "-journal") != 0 &&
+      strTailCompare(p->zFName, "-wal") != 0)
+  {
+      // Now reopen the file and mark it sparse.
+      p->hFile = MakeSparseFile(zName);
+      vfstrace_printf(pInfo, "> %s.xOpen(%s,flags=0x%x)",
+          pInfo->zVfsName, p->zFName, flags);
+  }
+  else
+  {
+      vfstrace_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
+          pInfo->zVfsName, p->zFName, flags);
+  }
 
-  vfstrace_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
-                  pInfo->zVfsName, p->zFName, flags);
   if( p->pReal->pMethods ){
-    sqlite3_io_methods *pNew = sqlite3_malloc( sizeof(*pNew) );
+    sqlite3_io_methods *pNew = (sqlite3_io_methods*)sqlite3_malloc( sizeof(*pNew) );
     const sqlite3_io_methods *pSub = p->pReal->pMethods;
     memset(pNew, 0, sizeof(*pNew));
     pNew->iVersion = pSub->iVersion;
@@ -890,7 +1036,7 @@ int vfscompress_register(
   if( pRoot==0 ) return SQLITE_NOTFOUND;
   nName = strlen("vfscompress");
   nByte = sizeof(*pNew) + sizeof(*pInfo) + nName + 1;
-  pNew = sqlite3_malloc( nByte );
+  pNew = (sqlite3_vfs*)sqlite3_malloc( nByte );
   if( pNew==0 ) return SQLITE_NOMEM;
   memset(pNew, 0, nByte);
   pInfo = (vfstrace_info*)&pNew[1];
@@ -933,6 +1079,7 @@ int vfscompress_register(
   pInfo->pCache = (vfsc_chunk*)sqlite3_malloc(sizeof(vfsc_chunk));
   memset(pInfo->pCache, 0, sizeof(vfsc_chunk));
   if( pInfo->pCache==0 ) return SQLITE_NOMEM;
+  pInfo->pCache->origSize = -1;
 
   vfstrace_printf(pInfo, "%s.enabled_for(\"%s\")\n",
        pInfo->zVfsName, pRoot->zName);

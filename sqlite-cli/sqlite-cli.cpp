@@ -35,7 +35,7 @@ const char* GenerateText(int length)
     char* text = new char[length + 1];
     for (int i = 0; i < length; ++i)
     {
-        text[i] = alpha[i % ALPHA_COUNT];
+        text[i] = alpha[rand() % ALPHA_COUNT];
     }
 
     text[length] = '\0';
@@ -54,6 +54,11 @@ static int callback_check(void *NotUsed, int argc, char **argv, char **azColName
         if (strcmp(expected_value, argv[i]) != 0)
         {
             printf("Error: value mismatch.\nExpected: %s\n Got: %s\n", expected_value, argv[i]);
+            exit(1);
+        }
+        else
+        {
+            printf("++PASS++\n");
         }
     }
 
@@ -82,8 +87,8 @@ void CreateLargeDB(_TCHAR* dbFilename)
     const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num INT, timeEnter DATE);";
     rc = sqlite3_exec(db, CREATE_TABLE_COMMAND, callback, 0, &zErrMsg);
     
-    const int ROW_COUNT = 5;
-    const int MAX_DATA_SIZE = 1 * 1024 * 1024;
+    const int ROW_COUNT = 100;
+    const int MAX_DATA_SIZE = 300 * 1024;
     const char* test_data[ROW_COUNT];
     char* buffer = new char[MAX_DATA_SIZE + 128];
     const char const* INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
@@ -93,8 +98,12 @@ void CreateLargeDB(_TCHAR* dbFilename)
         int data_size = ((int)rand() * (int)rand()) % MAX_DATA_SIZE;
         test_data[c] = GenerateText(data_size);
         sprintf(buffer, INSERT_COMMAND, test_data[c], c);
-        printf("%d) Inserting %d bytes...", c, data_size);
+        printf("%d) Inserting %d bytes...\n", c, data_size);
         rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
+        if (rc != SQLITE_OK)
+        {
+            printf("%d) Insertion failed! Error code: %d.\n", c, rc);
+        }
     }
 
     printf(">>>> Reading\n");
