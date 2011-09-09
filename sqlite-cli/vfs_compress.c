@@ -67,6 +67,7 @@ struct vfstrace_info {
   const char *zVfsName;               /* Name of this trace-VFS */
   sqlite3_vfs *pTraceVfs;             /* Pointer back to the trace VFS */
   vfsc_chunk *pCache;
+  int trace;
   //int pages_per_chunk;                /* Number of pages in a single chunk */
 };
 
@@ -235,11 +236,14 @@ static void vfstrace_printf(
 ){
   va_list ap;
   char *zMsg;
-  va_start(ap, zFormat);
-  zMsg = sqlite3_vmprintf(zFormat, ap);
-  va_end(ap);
-  pInfo->xOut(zMsg, pInfo->pOutArg);
-  sqlite3_free(zMsg);
+  if (pInfo->trace)
+  {
+      va_start(ap, zFormat);
+      zMsg = sqlite3_vmprintf(zFormat, ap);
+      va_end(ap);
+      pInfo->xOut(zMsg, pInfo->pOutArg);
+      sqlite3_free(zMsg);
+  }
 }
 
 /*
@@ -337,6 +341,70 @@ static int vfstraceClose(sqlite3_file *pFile){
   return rc;
 }
 
+static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
+{
+    FILE_ZERO_DATA_INFORMATION fzdi;
+    DWORD dwTemp;
+    BOOL res;
+
+    if (size <= 0)
+    {
+        return 0;
+    }
+
+    // Specify the starting and the ending address (not the size) of the
+    // sparse zero block
+    fzdi.FileOffset.QuadPart = start;
+    fzdi.BeyondFinalZero.QuadPart = start + size;
+
+    // Mark the range as sparse zero block
+    SetLastError(0);
+    res = DeviceIoControl(hSparseFile,
+        FSCTL_SET_ZERO_DATA,
+        &fzdi,
+        sizeof(fzdi),
+        NULL,
+        0,
+        &dwTemp,
+        NULL);
+
+    if (res)
+    {
+        return 0; //Sucess
+    }
+
+    // return the error value
+    return GetLastError();
+}
+
+static int FlushCache(vfstrace_file *pFile, vfsc_chunk *pCache)
+{
+    vfstrace_info *pInfo = pFile->pInfo;
+    int rc = SQLITE_OK;
+    if (pCache != NULL && pCache->origSize > 0 &&
+        (pCache->state == uncompressed || pCache->state == unwritten))
+    {
+        if (pCache->state == uncompressed)
+        {
+            // Compress...
+            pCache->compSize = Compress(pCache->pOrigData, pCache->origSize, pCache->pCompData, CHUNK_SIZE_BYTES);
+            vfstrace_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pCache->origSize, pCache->compSize, pCache->offset);
+        }
+
+        // Write the chunk.
+        vfstrace_printf(pInfo, "> %s.Flush(%s,n=%d,ofst=%lld)",
+            pInfo->zVfsName, pFile->zFName, pCache->compSize, pCache->offset);
+        vfstrace_printf(pInfo, "  Chunk=%lld, Data=%d bytes", pCache->offset, pCache->compSize);
+        rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pCache->pCompData, pCache->compSize, pCache->offset);
+        vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+
+        SetSparseRange(pFile->hFile, pCache->offset + pCache->compSize, CHUNK_SIZE_BYTES - pCache->compSize);
+        pCache->state = cached;
+    }
+
+    return rc;
+}
+
 static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
 {
     int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, CHUNK_SIZE_BYTES, chunkOffset);
@@ -356,7 +424,7 @@ static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     {
         pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
         pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
-        //vfstrace_printf(pFile->pInfo, "Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
+        vfstrace_printf(pFile->pInfo, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
 
     pChunk->offset = chunkOffset;
@@ -375,6 +443,9 @@ static int GetCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
     if (pFile->pInfo->pCache->offset != chunkOffset ||
         pFile->pInfo->pCache->state == empty)
     {
+        // Flush current cache if necessary.
+        FlushCache(pFile, pFile->pInfo->pCache);
+
         // Not cached, read from disk and cache.
         rc = ReadCache(pFile, chunkOffset, pFile->pInfo->pCache);
     }
@@ -406,10 +477,10 @@ static int vfstraceRead(
       //TODO: Check if the required data crosses chunk boundaries.
       memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
 
-      //vfstrace_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
-      //    pInfo->zVfsName, p->zFName, iAmt, iOfst);
-      //vfstrace_printf(pInfo, "  Chunk=%lld", chunkOffset);
-      //vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+      vfstrace_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
+          pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      vfstrace_printf(pInfo, "  Chunk=%lld", chunkOffset);
+      vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   }
   else
   {
@@ -420,42 +491,6 @@ static int vfstraceRead(
   }
 
   return rc;
-}
-
-static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
-{
-    FILE_ZERO_DATA_INFORMATION fzdi;
-    DWORD dwTemp;
-    BOOL res;
-
-    if (size <= 0)
-    {
-        return 0;
-    }
-
-    // Specify the starting and the ending address (not the size) of the
-    // sparse zero block
-    fzdi.FileOffset.QuadPart = start;
-    fzdi.BeyondFinalZero.QuadPart = start + size;
-
-    // Mark the range as sparse zero block
-    SetLastError(0);
-    res = DeviceIoControl(hSparseFile,
-                            FSCTL_SET_ZERO_DATA,
-                            &fzdi,
-                            sizeof(fzdi),
-                            NULL,
-                            0,
-                            &dwTemp,
-                            NULL);
-
-    if (res)
-    {
-        return 0; //Sucess
-    }
-
-    // return the error value
-    return GetLastError();
 }
 
 /*
@@ -469,7 +504,7 @@ static int vfstraceWrite(
 ){
   vfstrace_file *p = (vfstrace_file *)pFile;
   vfstrace_info *pInfo = p->pInfo;
-  int rc;
+  int rc = SQLITE_OK;
   sqlite_int64 chunkOffset;
 
   if (p->hFile != 0)
@@ -477,10 +512,11 @@ static int vfstraceWrite(
       // Get the cache chunk.
       int offsetInChunk = iOfst % CHUNK_SIZE_BYTES;
       chunkOffset = iOfst - offsetInChunk;
-      rc = GetCache(p, chunkOffset, &pInfo->pCache);
+      GetCache(p, chunkOffset, &pInfo->pCache);
 
       // Write the new data.
       memcpy(pInfo->pCache->pOrigData + offsetInChunk, zBuf, iAmt);
+      pInfo->pCache->state = uncompressed;
       pInfo->pCache->origSize = max(pInfo->pCache->origSize, offsetInChunk + iAmt);
       if (pInfo->pCache->origSize > CHUNK_SIZE_BYTES)
       {
@@ -488,18 +524,20 @@ static int vfstraceWrite(
           exit(1);
       }
 
+#if 0
       // Compress...
       pInfo->pCache->compSize = Compress(pInfo->pCache->pOrigData, pInfo->pCache->origSize, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES);
-      //vfstrace_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
+      vfstrace_printf(pInfo, "> Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
 
       // Write the chunk.
       rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
       SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
+#endif
 
-      //vfstrace_printf(pInfo, "> %s.xWrite(%s,n=%d,ofst=%lld)",
-      //    pInfo->zVfsName, p->zFName, iAmt, iOfst);
-      //vfstrace_printf(pInfo, "  Chunk=%lld, Data=%d bytes", chunkOffset, pInfo->pCache->compSize);
-      //vfstrace_print_errcode(pInfo, " -> %s\n", rc);
+      vfstrace_printf(pInfo, "> %s.xWrite(%s,n=%d,ofst=%lld)",
+          pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      vfstrace_printf(pInfo, "  Chunk=%lld, Data=%d bytes", chunkOffset, pInfo->pCache->compSize);
+      vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   }
   else
   {
@@ -535,6 +573,10 @@ static int vfstraceSync(sqlite3_file *pFile, int flags){
   int rc;
   int i;
   char zBuf[100];
+
+  vfsc_chunk *pCache = pInfo->pCache;
+  FlushCache(p, pCache);
+
   memcpy(zBuf, "|0", 3);
   i = 0;
   if( flags & SQLITE_SYNC_FULL )        strappend(zBuf, &i, "|FULL");
@@ -1078,6 +1120,7 @@ int vfscompress_register(
   pInfo->pOutArg = stderr;
   pInfo->zVfsName = pNew->zName;
   pInfo->pTraceVfs = pNew;
+  pInfo->trace = trace;
 
   pInfo->pCache = (vfsc_chunk*)sqlite3_malloc(sizeof(vfsc_chunk));
   memset(pInfo->pCache, 0, sizeof(vfsc_chunk));
