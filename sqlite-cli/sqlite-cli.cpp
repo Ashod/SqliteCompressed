@@ -79,7 +79,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     //srand(time(NULL));
 
     DeleteFile(dbFilename);
-    vfscompress_register(1,1);
+    vfscompress_register(0, 1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -89,6 +89,8 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num INT, timeEnter DATE);";
     rc = sqlite3_exec(db, CREATE_TABLE_COMMAND, callback, 0, &zErrMsg);
+
+    DWORD start = GetTickCount();
 
     const int ROW_COUNT = 100;
     const int MAX_DATA_SIZE = 300 * 1024;
@@ -125,7 +127,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
     {
-        int data_size = ((int)rand() * (int)rand()) % MAX_DATA_SIZE;
+        int data_size = ((int)rand() * (int)rand()) % (MAX_DATA_SIZE * 2);
         delete [] test_data[c];
         test_data[c] = GenerateText(data_size);
         sprintf(buffer, UPDATE_COMMAND, test_data[c], c);
@@ -150,6 +152,9 @@ void CreateLargeDB(_TCHAR* dbFilename)
     if( rc!=SQLITE_OK ){
         fprintf(stderr, "SQL error: %s\n", zErrMsg);
     }
+
+    printf("Finished in %dms\n", GetTickCount() - start);
+
     sqlite3_close(db);
 
     GetSparseFileSize(dbFilename);
