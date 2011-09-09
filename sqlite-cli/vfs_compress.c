@@ -153,6 +153,7 @@ static int Compress(const void* input, int input_length, void* output, int max_o
     (void)deflateEnd(&strm);
 
     {
+#if 0
         char dout[CHUNK_SIZE_BYTES];
         int dec = Decompress(output, CHUNK_SIZE_BYTES, dout, CHUNK_SIZE_BYTES);
         if (dec != input_length)
@@ -160,6 +161,7 @@ static int Compress(const void* input, int input_length, void* output, int max_o
             printf("ERROR: Decompression failure!\n");
             exit(1);
         }
+#endif
     }
 
     return output_length;
@@ -184,16 +186,16 @@ static int Decompress(const void* input, int input_length, void* output, int max
     {
         return -1;
     }
-    
+
     strm.avail_in = input_length;
     strm.next_in = (Bytef*)input;
     strm.avail_out = max_output_length;
     strm.next_out = (Bytef*)output;
     ret = inflate(&strm, Z_NO_FLUSH);
-    
+
     output_length = max_output_length - strm.avail_out;
     (void)inflateEnd(&strm);
-    
+
     return output_length;
 }
 
@@ -342,7 +344,7 @@ static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     {
         return rc;
     }
-   
+
     if (pChunk->pCompData[0] == 0)
     {
         // The first byte should contain the length, hence can't be zero for compressed streams.
@@ -354,7 +356,7 @@ static int ReadCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     {
         pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
         pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
-        vfstrace_printf(pFile->pInfo, "Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
+        //vfstrace_printf(pFile->pInfo, "Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
 
     pChunk->offset = chunkOffset;
@@ -385,9 +387,9 @@ static int GetCache(vfstrace_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
 ** Read data from an vfstrace-file.
 */
 static int vfstraceRead(
-  sqlite3_file *pFile, 
-  void *zBuf, 
-  int iAmt, 
+  sqlite3_file *pFile,
+  void *zBuf,
+  int iAmt,
   sqlite_int64 iOfst
 ){
   vfstrace_file *p = (vfstrace_file *)pFile;
@@ -404,18 +406,19 @@ static int vfstraceRead(
       //TODO: Check if the required data crosses chunk boundaries.
       memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
 
-      vfstrace_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
-          pInfo->zVfsName, p->zFName, iAmt, iOfst);
-      vfstrace_printf(pInfo, "  Chunk=%lld", chunkOffset);
+      //vfstrace_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
+      //    pInfo->zVfsName, p->zFName, iAmt, iOfst);
+      //vfstrace_printf(pInfo, "  Chunk=%lld", chunkOffset);
+      //vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   }
   else
   {
       vfstrace_printf(pInfo, "%s.xRead(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
       rc = p->pReal->pMethods->xRead(p->pReal, zBuf, iAmt, iOfst);
+      vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   }
 
-  vfstrace_print_errcode(pInfo, " -> %s\n", rc);
   return rc;
 }
 
@@ -430,22 +433,22 @@ static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
         return 0;
     }
 
-    // Specify the starting and the ending address (not the size) of the 
+    // Specify the starting and the ending address (not the size) of the
     // sparse zero block
     fzdi.FileOffset.QuadPart = start;
     fzdi.BeyondFinalZero.QuadPart = start + size;
 
     // Mark the range as sparse zero block
     SetLastError(0);
-    res = DeviceIoControl(hSparseFile, 
-                            FSCTL_SET_ZERO_DATA, 
-                            &fzdi, 
-                            sizeof(fzdi), 
-                            NULL, 
-                            0, 
-                            &dwTemp, 
+    res = DeviceIoControl(hSparseFile,
+                            FSCTL_SET_ZERO_DATA,
+                            &fzdi,
+                            sizeof(fzdi),
+                            NULL,
+                            0,
+                            &dwTemp,
                             NULL);
-    
+
     if (res)
     {
         return 0; //Sucess
@@ -459,9 +462,9 @@ static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
 ** Write data to an vfstrace-file.
 */
 static int vfstraceWrite(
-  sqlite3_file *pFile, 
-  const void *zBuf, 
-  int iAmt, 
+  sqlite3_file *pFile,
+  const void *zBuf,
+  int iAmt,
   sqlite_int64 iOfst
 ){
   vfstrace_file *p = (vfstrace_file *)pFile;
@@ -487,7 +490,7 @@ static int vfstraceWrite(
 
       // Compress...
       pInfo->pCache->compSize = Compress(pInfo->pCache->pOrigData, pInfo->pCache->origSize, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES);
-      vfstrace_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
+      //vfstrace_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
 
       // Write the chunk.
       rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
@@ -610,7 +613,7 @@ static int vfstraceCheckReservedLock(sqlite3_file *pFile, int *pResOut){
   vfstrace_file *p = (vfstrace_file *)pFile;
   vfstrace_info *pInfo = p->pInfo;
   int rc;
-  vfstrace_printf(pInfo, "%s.xCheckReservedLock(%s,%d)", 
+  vfstrace_printf(pInfo, "%s.xCheckReservedLock(%s,%d)",
                   pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xCheckReservedLock(p->pReal, pResOut);
   vfstrace_print_errcode(pInfo, " -> %s", rc);
@@ -710,10 +713,10 @@ static int vfstraceShmLock(sqlite3_file *pFile, int ofst, int n, int flags){
   return rc;
 }
 static int vfstraceShmMap(
-  sqlite3_file *pFile, 
-  int iRegion, 
-  int szRegion, 
-  int isWrite, 
+  sqlite3_file *pFile,
+  int iRegion,
+  int szRegion,
+  int isWrite,
   void volatile **pp
 ){
   vfstrace_file *p = (vfstrace_file *)pFile;
@@ -744,30 +747,30 @@ static int vfstraceShmUnmap(sqlite3_file *pFile, int delFlag){
 
 HANDLE MakeSparseFile(const char *zName)
 {
-    // Use CreateFile as you would normally - Create file with whatever flags 
+    // Use CreateFile as you would normally - Create file with whatever flags
     //and File Share attributes that works for you
     DWORD dwTemp;
     DWORD res;
-    HANDLE hSparseFile = CreateFile(zName, 
-        GENERIC_READ|GENERIC_WRITE, 
-        FILE_SHARE_READ|FILE_SHARE_WRITE, 
-        NULL, 
-        OPEN_ALWAYS, 
-        FILE_ATTRIBUTE_NORMAL, 
+    HANDLE hSparseFile = CreateFile(zName,
+        GENERIC_READ|GENERIC_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
         NULL);
 
-    if (hSparseFile == INVALID_HANDLE_VALUE) 
+    if (hSparseFile == INVALID_HANDLE_VALUE)
     {
         return hSparseFile;
     }
 
-    res = DeviceIoControl(hSparseFile, 
-                            FSCTL_SET_SPARSE, 
-                            NULL, 
-                            0, 
-                            NULL, 
-                            0, 
-                            &dwTemp, 
+    res = DeviceIoControl(hSparseFile,
+                            FSCTL_SET_SPARSE,
+                            NULL,
+                            0,
+                            NULL,
+                            0,
+                            &dwTemp,
                             NULL);
     return hSparseFile;
 }
@@ -861,9 +864,9 @@ static int vfstraceDelete(sqlite3_vfs *pVfs, const char *zPath, int dirSync){
 ** is available, or false otherwise.
 */
 static int vfstraceAccess(
-  sqlite3_vfs *pVfs, 
-  const char *zPath, 
-  int flags, 
+  sqlite3_vfs *pVfs,
+  const char *zPath,
+  int flags,
   int *pResOut
 ){
   vfstrace_info *pInfo = (vfstrace_info*)pVfs->pAppData;
@@ -883,9 +886,9 @@ static int vfstraceAccess(
 ** of at least (DEVSYM_MAX_PATHNAME+1) bytes.
 */
 static int vfstraceFullPathname(
-  sqlite3_vfs *pVfs, 
-  const char *zPath, 
-  int nOut, 
+  sqlite3_vfs *pVfs,
+  const char *zPath,
+  int nOut,
   char *zOut
 ){
   vfstrace_info *pInfo = (vfstrace_info*)pVfs->pAppData;
@@ -911,7 +914,7 @@ static void *vfstraceDlOpen(sqlite3_vfs *pVfs, const char *zPath){
 
 /*
 ** Populate the buffer zErrMsg (size nByte bytes) with a human readable
-** utf-8 string describing the most recent error encountered associated 
+** utf-8 string describing the most recent error encountered associated
 ** with dynamic libraries.
 */
 static void vfstraceDlError(sqlite3_vfs *pVfs, int nByte, char *zErrMsg){
@@ -943,7 +946,7 @@ static void vfstraceDlClose(sqlite3_vfs *pVfs, void *pHandle){
 }
 
 /*
-** Populate the buffer pointed to by zBufOut with nByte bytes of 
+** Populate the buffer pointed to by zBufOut with nByte bytes of
 ** random data.
 */
 static int vfstraceRandomness(sqlite3_vfs *pVfs, int nByte, char *zBufOut){
@@ -954,7 +957,7 @@ static int vfstraceRandomness(sqlite3_vfs *pVfs, int nByte, char *zBufOut){
 }
 
 /*
-** Sleep for nMicro microseconds. Return the number of microseconds 
+** Sleep for nMicro microseconds. Return the number of microseconds
 ** actually slept.
 */
 static int vfstraceSleep(sqlite3_vfs *pVfs, int nMicro){
@@ -1016,7 +1019,7 @@ static const char *vfstraceNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 /*
 ** Clients invoke this routine to construct a new trace-vfs shim.
 **
-** Return SQLITE_OK on success.  
+** Return SQLITE_OK on success.
 **
 ** SQLITE_NOMEM is returned in the case of a memory allocation error.
 ** SQLITE_NOTFOUND is returned if zOldVfsName does not exist.
@@ -1062,11 +1065,11 @@ int vfscompress_register(
     pNew->xCurrentTimeInt64 = pRoot->xCurrentTimeInt64==0 ? 0 :
                                    vfstraceCurrentTimeInt64;
     if( pNew->iVersion>=3 ){
-      pNew->xSetSystemCall = pRoot->xSetSystemCall==0 ? 0 : 
+      pNew->xSetSystemCall = pRoot->xSetSystemCall==0 ? 0 :
                                    vfstraceSetSystemCall;
-      pNew->xGetSystemCall = pRoot->xGetSystemCall==0 ? 0 : 
+      pNew->xGetSystemCall = pRoot->xGetSystemCall==0 ? 0 :
                                    vfstraceGetSystemCall;
-      pNew->xNextSystemCall = pRoot->xNextSystemCall==0 ? 0 : 
+      pNew->xNextSystemCall = pRoot->xNextSystemCall==0 ? 0 :
                                    vfstraceNextSystemCall;
     }
   }
