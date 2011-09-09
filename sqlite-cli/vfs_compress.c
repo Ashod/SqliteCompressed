@@ -1068,13 +1068,15 @@ static const char *vfstraceNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 */
 int vfscompress_register(
    int trace,                  /* True to trace operations to stderr */
-   int makeDefault             /* True to make the new VFS the default */
+   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
 ){
   sqlite3_vfs *pNew;
   sqlite3_vfs *pRoot;
   vfstrace_info *pInfo;
   int nName;
   int nByte;
+
+  CompressionLevel = compressionLevel;
 
   // Find the windows VFS.
   pRoot = sqlite3_vfs_find("win32");
@@ -1129,5 +1131,5 @@ int vfscompress_register(
 
   vfstrace_printf(pInfo, "%s.enabled_for(\"%s\")\n",
        pInfo->zVfsName, pRoot->zName);
-  return sqlite3_vfs_register(pNew, makeDefault);
+  return sqlite3_vfs_register(pNew, 1);
 }

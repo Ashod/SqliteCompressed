@@ -79,7 +79,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     //srand(time(NULL));
 
     DeleteFile(dbFilename);
-    vfscompress_register(0, 1);
+    vfscompress_register(0, -1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
