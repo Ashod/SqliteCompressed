@@ -155,6 +155,7 @@
     <ClCompile Include="src\vdbeblob.c" />
     <ClCompile Include="src\vdbemem.c" />
     <ClCompile Include="src\vdbetrace.c" />
+    <ClCompile Include="src\vfs_compress.c" />
     <ClCompile Include="src\vtab.c" />
     <ClCompile Include="src\wal.c" />
     <ClCompile Include="src\walker.c" />

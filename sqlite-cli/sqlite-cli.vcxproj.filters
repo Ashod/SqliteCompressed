@@ -35,8 +35,5 @@
     <ClCompile Include="sqlite-cli.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="vfs_compress.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
 </Project>

@@ -34,8 +34,11 @@ sqlite-src/.libs/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 *.o
 tsrc/
 sqlite-src/A
 sqlite-src/file
 sqlite-src/http
+sqlite-src/test.bu
+sqlite-src/testdb

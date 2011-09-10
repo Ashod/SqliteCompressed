@@ -177,7 +177,7 @@ LIBOBJS0 = alter.lo analyze.lo attach.lo auth.lo \
          random.lo resolve.lo rowset.lo rtree.lo select.lo status.lo \
          table.lo tokenize.lo trigger.lo \
          update.lo util.lo vacuum.lo \
-         vdbe.lo vdbeapi.lo vdbeaux.lo vdbeblob.lo vdbemem.lo vdbetrace.lo \
+         vdbe.lo vdbeapi.lo vdbeaux.lo vdbeblob.lo vdbemem.lo vdbetrace.lo vfs_compress.lo\
          wal.lo walker.lo where.lo utf.lo vtab.lo
 
 # Object files for the amalgamation.
@@ -276,6 +276,7 @@ SRC = \
   $(TOP)/src/vdbemem.c \
   $(TOP)/src/vdbetrace.c \
   $(TOP)/src/vdbeInt.h \
+  $(TOP)/src/vfs_compress.c \
   $(TOP)/src/vtab.c \
   $(TOP)/src/wal.c \
   $(TOP)/src/wal.h \
@@ -417,6 +418,7 @@ TESTSRC2 = \
   $(TOP)/src/vdbe.c \
   $(TOP)/src/vdbemem.c \
   $(TOP)/src/vdbetrace.c \
+  $(TOP)/src/vfs_compress.c \
   $(TOP)/src/where.c \
   parse.c \
   $(TOP)/ext/fts3/fts3.c \
@@ -448,6 +450,8 @@ HDR = \
    $(TOP)/src/sqliteLimit.h \
    $(TOP)/src/vdbe.h \
    $(TOP)/src/vdbeInt.h \
+   $(TOP)/src/zconf.h \
+   $(TOP)/src/zlib.h \
    config.h
 
 # Header files used by extensions
@@ -484,7 +488,7 @@ sqlite3.pc: $(TOP)/sqlite3.pc.in
 	./config.status
 
 libsqlite3.la:	$(LIBOBJ)
-	$(LTLINK) -o $@ $(LIBOBJ) $(TLIBS) \
+	$(LTLINK) -o $@ $(LIBOBJ) $(TLIBS) -lz \
 		${ALLOWRELEASE} -rpath "$(libdir)" -version-info "8:6:8"
 
 libtclsqlite3.la:	tclsqlite.lo libsqlite3.la
@@ -740,6 +744,9 @@ vdbemem.lo:	$(TOP)/src/vdbemem.c $(HDR)
 vdbetrace.lo:	$(TOP)/src/vdbetrace.c $(HDR)
 	$(LTCOMPILE) $(TEMP_STORE) -c $(TOP)/src/vdbetrace.c
 
+vfs_compress.lo:	$(TOP)/src/vfs_compress.c $(HDR)
+	$(LTCOMPILE) $(TEMP_STORE) -c $(TOP)/src/vfs_compress.c
+
 vtab.lo:	$(TOP)/src/vtab.c $(HDR)
 	$(LTCOMPILE) $(TEMP_STORE) -c $(TOP)/src/vtab.c
 
@@ -866,7 +873,7 @@ TESTFIXTURE_SRC = $(TESTSRC) $(TOP)/src/tclsqlite.c $(TESTFIXTURE_SRC$(USE_AMALG
 
 testfixture$(TEXE):	$(TESTFIXTURE_SRC)
 	$(LTLINK) -DSQLITE_NO_SYNC=1 $(TEMP_STORE) $(TESTFIXTURE_FLAGS) \
-		-o $@ $(TESTFIXTURE_SRC) $(LIBTCL) $(TLIBS)
+		-o $@ $(TESTFIXTURE_SRC) $(LIBTCL) $(TLIBS) -lz
 
 
 fulltest:	testfixture$(TEXE) sqlite3$(TEXE)

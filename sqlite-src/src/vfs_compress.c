@@ -18,16 +18,24 @@
 **
 **   int vfscompress_register(
 **       int trace,                  // True to trace operations to stderr
-**       int makeDefault             // True to make the new VFS the default
+**       int compressionLevel        // The compression level: -1 for default, 1 fastest, 9 best
 **   );
 **
 */
+#include "sqliteInt.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include "sqlite3.h"
 #include "zlib.h"
-#include <Windows.h>
+#include <winbase.h>
+#include <WinIoCtl.h>
+
+#ifdef __CYGWIN__
+# include <sys/cygwin.h>
+#endif
+
+extern void *convertUtf8Filename(const char *zFilename);
 
 /*
 ** The chunk size is the compression unit.
@@ -343,6 +351,13 @@ static int vfstraceClose(sqlite3_file *pFile){
 
 static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
 {
+    typedef struct _FILE_ZERO_DATA_INFORMATION {
+
+        LARGE_INTEGER FileOffset;
+        LARGE_INTEGER BeyondFinalZero;
+
+    } FILE_ZERO_DATA_INFORMATION, *PFILE_ZERO_DATA_INFORMATION;
+   
     FILE_ZERO_DATA_INFORMATION fzdi;
     DWORD dwTemp;
     BOOL res;
@@ -356,6 +371,8 @@ static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
     // sparse zero block
     fzdi.FileOffset.QuadPart = start;
     fzdi.BeyondFinalZero.QuadPart = start + size;
+
+#define FSCTL_SET_ZERO_DATA             CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 50, METHOD_BUFFERED, FILE_WRITE_DATA) // FILE_ZERO_DATA_INFORMATION,
 
     // Mark the range as sparse zero block
     SetLastError(0);
@@ -793,9 +810,18 @@ HANDLE MakeSparseFile(const char *zName)
     //and File Share attributes that works for you
     DWORD dwTemp;
     DWORD res;
-    HANDLE hSparseFile = CreateFile(zName,
+    void *zConverted;              /* Filename in OS encoding */
+    HANDLE hSparseFile;
+
+    /* Convert the filename to the system encoding. */
+    zConverted = convertUtf8Filename(zName);
+    if( zConverted==0 ){
+        return INVALID_HANDLE_VALUE;
+    }
+
+    hSparseFile = CreateFileW((WCHAR*)zConverted,
         GENERIC_READ|GENERIC_WRITE,
-        FILE_SHARE_READ|FILE_SHARE_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
         OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
@@ -838,7 +864,8 @@ static int vfstraceOpen(
   rc = pRoot->xOpen(pRoot, zName, p->pReal, flags, pOutFlags);
 
   if (strTailCompare(p->zFName, "-journal") != 0 &&
-      strTailCompare(p->zFName, "-wal") != 0)
+      strTailCompare(p->zFName, "-wal") != 0 &&
+      strTailCompare(p->zFName, "-shm") != 0)
   {
       // Now reopen the file and mark it sparse.
       p->hFile = MakeSparseFile(zName);
@@ -1066,7 +1093,7 @@ static const char *vfstraceNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 ** SQLITE_NOMEM is returned in the case of a memory allocation error.
 ** SQLITE_NOTFOUND is returned if zOldVfsName does not exist.
 */
-int vfscompress_register(
+SQLITE_API int vfscompress_register(
    int trace,                  /* True to trace operations to stderr */
    int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
 ){

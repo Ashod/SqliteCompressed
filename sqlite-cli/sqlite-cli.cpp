@@ -11,7 +11,7 @@
 
 extern "C" int vfscompress_register(
     int trace,
-    int makeDefault
+    int compressionLevel
     );
 
 BOOL GetSparseFileSize(LPCTSTR lpFileName);

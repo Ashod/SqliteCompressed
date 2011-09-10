@@ -1998,7 +1998,7 @@ static const sqlite3_io_methods winIoMethod = {
 ** is obtained from malloc and must be freed by the calling
 ** function.
 */
-static void *convertUtf8Filename(const char *zFilename){
+void *convertUtf8Filename(const char *zFilename){
   void *zConverted = 0;
   if( isNT() ){
     zConverted = utf8ToUnicode(zFilename);

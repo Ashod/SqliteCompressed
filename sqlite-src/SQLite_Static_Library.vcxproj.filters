@@ -234,6 +234,9 @@
     <ClCompile Include="src\test_vfstrace.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\vfs_compress.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\btree.h">

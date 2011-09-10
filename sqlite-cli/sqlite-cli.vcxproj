@@ -60,7 +60,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(SolutionDir)$(Configuration)\SQLite_Static_Library.lib;$(ProjectDir)zlib1.2.5.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)$(Configuration)\SQLite_Static_Library.lib;$(SolutionDir)sqlite-src\zlib1.2.5.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -83,7 +83,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>$(SolutionDir)$(Configuration)\SQLite_Static_Library.lib;$(ProjectDir)zlib1.2.5.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)$(Configuration)\SQLite_Static_Library.lib;$(SolutionDir)sqlite-src\zlib1.2.5.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -100,9 +100,6 @@
   <ItemGroup>
     <ClCompile Include="sqlite-cli.cpp" />
     <ClCompile Include="stdafx.cpp" />
-    <ClCompile Include="vfs_compress.c">
-      <CompileAs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Default</CompileAs>
-    </ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
