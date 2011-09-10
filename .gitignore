@@ -32,5 +32,10 @@ sqlite.opensdf
 sqlite.sdf
 sqlite-src/.libs/
 *.db
+*.db-journal
+*.db-wal
 *.o
 tsrc/
+sqlite-src/A
+sqlite-src/file
+sqlite-src/http
