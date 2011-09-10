@@ -36,7 +36,14 @@ sqlite-src/.libs/
 *.db-wal
 *.db-shm
 *.o
+*.lo
+*.la
+*.temp
 tsrc/
+test2-script.tcl
+test.tcl
+tf_main2.tcl
+tf_main.tcl
 sqlite-src/A
 sqlite-src/file
 sqlite-src/http
