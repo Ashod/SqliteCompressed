@@ -241,6 +241,7 @@ foreach file {
    os_os2.c
    os_unix.c
    os_win.c
+   vfs_compress.c
 
    bitvec.c
    pcache.c
