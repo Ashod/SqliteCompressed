@@ -33,3 +33,4 @@ sqlite.sdf
 sqlite-src/.libs/
 *.db
 *.o
+tsrc/
