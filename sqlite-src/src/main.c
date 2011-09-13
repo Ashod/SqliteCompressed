@@ -2289,6 +2289,14 @@ int sqlite3_open(
   const char *zFilename, 
   sqlite3 **ppDb 
 ){
+#if SQLITE_TEST || VFS_COMPRESS_ENABLE
+    extern int vfscompress_register(
+        int trace,
+        int compressionLevel
+        );
+    vfscompress_register(0, -1);
+#endif
+
   return openDatabase(zFilename, ppDb,
                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, 0);
 }
