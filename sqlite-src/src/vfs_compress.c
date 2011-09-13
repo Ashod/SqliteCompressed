@@ -460,7 +460,7 @@ static int vfstraceClose(sqlite3_file *pFile){
 
   FlushCache(p);
   CloseHandle(p->hFile);
-  p->hFile = 0;
+  p->hFile = INVALID_HANDLE_VALUE;
 
   vfstrace_printf(pInfo, "%s.xClose(%s)", pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xClose(p->pReal);
@@ -486,7 +486,7 @@ static int vfstraceRead(
   int rc = 0;
   sqlite_int64 chunkOffset;
 
-  if (p->hFile != 0)
+  if (p->hFile != INVALID_HANDLE_VALUE)
   {
       chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
       rc = GetCache(p, chunkOffset, &pInfo->pCache);
@@ -525,7 +525,7 @@ static int vfstraceWrite(
   int rc = SQLITE_OK;
   sqlite_int64 chunkOffset;
 
-  if (p->hFile != 0)
+  if (p->hFile != INVALID_HANDLE_VALUE)
   {
       // Get the cache chunk.
       int offsetInChunk = iOfst % CHUNK_SIZE_BYTES;
@@ -808,7 +808,10 @@ static int vfstraceShmUnmap(sqlite3_file *pFile, int delFlag){
   return rc;
 }
 
-HANDLE MakeSparseFile(const char *zName)
+/*
+** Opens a file in sparse-mode.
+*/
+static HANDLE OpenSparseFile(const char *zName)
 {
     // Use CreateFile as you would normally - Create file with whatever flags
     //and File Share attributes that works for you
@@ -836,6 +839,7 @@ HANDLE MakeSparseFile(const char *zName)
         return hSparseFile;
     }
 
+    SetLastError(0);
     res = DeviceIoControl(hSparseFile,
                             FSCTL_SET_SPARSE,
                             NULL,
@@ -847,6 +851,26 @@ HANDLE MakeSparseFile(const char *zName)
     return hSparseFile;
 }
 
+/*
+** Checks whether or not a database file is compressed by us.
+*/
+static int IsCompressed(HANDLE hFile)
+{
+    char buffer[100];
+    DWORD read = 0;
+    LONG upper = 0;
+
+    ReadFile(hFile, buffer, 14, &read, NULL);
+    SetFilePointer(hFile, 0, &upper, FILE_BEGIN);
+    if (read == 0)
+    {
+        // Empty file, just start supporting compression.
+        return 1;
+    }
+
+    buffer[read] = 0;
+    return (strcmp(buffer, "SQLite format ") != 0);
+}
 
 /*
 ** Open an vfstrace file handle.
@@ -865,20 +889,11 @@ static int vfstraceOpen(
   p->pInfo = pInfo;
   p->zFName = zName ? fileTail(zName) : "<temp>";
   p->pReal = (sqlite3_file *)&p[1];
+  p->hFile = INVALID_HANDLE_VALUE;
   rc = pRoot->xOpen(pRoot, zName, p->pReal, flags, pOutFlags);
 
-  if ((flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB)
-  {
-      // Now reopen the file and mark it sparse.
-      p->hFile = MakeSparseFile(zName);
-      vfstrace_printf(pInfo, "> %s.xOpen(%s,flags=0x%x)",
-          pInfo->zVfsName, p->zFName, flags);
-  }
-  else
-  {
-      vfstrace_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
-          pInfo->zVfsName, p->zFName, flags);
-  }
+  vfstrace_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
+      pInfo->zVfsName, p->zFName, flags);
 
   if( p->pReal->pMethods ){
     sqlite3_io_methods *pNew = (sqlite3_io_methods*)sqlite3_malloc( sizeof(*pNew) );
@@ -911,6 +926,25 @@ static int vfstraceOpen(
   }else{
     vfstrace_printf(pInfo, "\n");
   }
+
+  if (rc == SQLITE_OK &&
+      ((flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB))
+  {
+      // Now reopen the file and mark it sparse.
+      p->hFile = OpenSparseFile(zName);
+      vfstrace_printf(pInfo, "> %s.xOpen(%s) -> %x", pInfo->zVfsName, p->zFName, GetLastError());
+      if (p->hFile != INVALID_HANDLE_VALUE)
+      {
+          int compressed = IsCompressed(p->hFile);
+          vfstrace_printf(pInfo, " -> %s\n", compressed ? "Compressed" : "Plain");
+          if (!compressed)
+          {
+              CloseHandle(p->hFile);
+              p->hFile = INVALID_HANDLE_VALUE;
+          }
+      }
+  }
+
   return rc;
 }
 
@@ -943,7 +977,7 @@ static int vfstraceAccess(
   vfstrace_info *pInfo = (vfstrace_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
   int rc;
-  vfstrace_printf(pInfo, "%s.xDelete(\"%s\",%d)",
+  vfstrace_printf(pInfo, "%s.xAccess(\"%s\",%d)",
                   pInfo->zVfsName, zPath, flags);
   rc = pRoot->xAccess(pRoot, zPath, flags, pResOut);
   vfstrace_print_errcode(pInfo, " -> %s", rc);
