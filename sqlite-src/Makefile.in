@@ -885,6 +885,9 @@ soaktest:	testfixture$(TEXE) sqlite3$(TEXE)
 test:	testfixture$(TEXE) sqlite3$(TEXE)
 	./testfixture$(TEXE) $(TOP)/test/veryquick.test
 
+vfs_compress_test:	testfixture$(TEXE) sqlite3$(TEXE)
+	./testfixture$(TEXE) $(TOP)/test/vfs_compress.test
+
 sqlite3_analyzer$(TEXE):	$(TESTFIXTURE_SRC) $(TOP)/tool/spaceanal.tcl
 	sed \
 	  -e '/^#/d' \
@@ -934,6 +937,8 @@ clean:
 	rm -f sqlite3.dll sqlite3.lib sqlite3.def
 	rm -f sqlite3.c
 
+rebuild: clean all testfixture$(TEXE) sqlite3$(TEXE)
+	
 distclean:	clean
 	rm -f config.log config.status libtool Makefile sqlite3.pc
 
