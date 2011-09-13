@@ -49,3 +49,4 @@ sqlite-src/file
 sqlite-src/http
 sqlite-src/test.bu
 sqlite-src/testdb
+sqlite-src/mydir
