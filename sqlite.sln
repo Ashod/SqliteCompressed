@@ -4,10 +4,16 @@ Microsoft Visual Studio Solution File, Format Version 11.00
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SQLite_Static_Library", "sqlite-src\SQLite_Static_Library.vcxproj", "{BD7E9D10-81ED-461A-A7D8-73AD46E3AB02}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sqlite-cli", "sqlite-cli\sqlite-cli.vcxproj", "{B83C70B0-55A8-4EE2-A920-E107AAA8885B}"
+	ProjectSection(ProjectDependencies) = postProject
+		{BD7E9D10-81ED-461A-A7D8-73AD46E3AB02} = {BD7E9D10-81ED-461A-A7D8-73AD46E3AB02}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SqliteDll", "SqliteDll\SqliteDll.vcxproj", "{29E9FED7-30BD-4CE0-8BAD-D8FD78DF5640}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sqlite-shell", "sqlite-shell\sqlite-shell.vcxproj", "{8D5572C7-F7C9-4A2B-8BF4-91A1EC6E0F01}"
+	ProjectSection(ProjectDependencies) = postProject
+		{BD7E9D10-81ED-461A-A7D8-73AD46E3AB02} = {BD7E9D10-81ED-461A-A7D8-73AD46E3AB02}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
