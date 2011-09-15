@@ -16,7 +16,7 @@
 **
 ** This source file exports a single symbol which is the name of a function:
 **
-**   int vfscompress_register(
+**   int sqlite3_compress(
 **       int trace,                  // True to trace operations to stderr
 **       int compressionLevel        // The compression level: -1 for default, 1 fastest, 9 best
 **   );
@@ -45,13 +45,24 @@ extern void *convertUtf8Filename(const char *zFilename);
 */
 #define CHUNK_SIZE_BYTES    (4 * 64 * 1024)
 
-enum state
+enum State
 {
-    empty,          //< no data at all.
-    uncompressed,   //< new data not compressed.
-    unwritten,      //< compressed data in memory.
-    cached          //< compressed data flushed.
+    Empty,          //< no data at all.
+    Uncompressed,   //< new data not compressed.
+    Unwritten,      //< compressed data in memory.
+    Cached          //< compressed data flushed.
 };
+
+typedef enum TraceLevel
+{
+    None = 0,
+    Registeration,
+    OpenClose,
+    NonIoOps,
+    Compression,
+    IoOps,
+    Maximum
+} TraceLevel;
 
 typedef struct vfsc_chunk vfsc_chunk;
 struct vfsc_chunk {
@@ -154,19 +165,22 @@ static const char *fileTail(const char *z){
 */
 static void vfsc_printf(
   vfsc_info *pInfo,
+  TraceLevel level,
   const char *zFormat,
   ...
 ){
   va_list ap;
   char *zMsg;
-  if (pInfo->trace)
+  if (pInfo->trace == None || pInfo->trace < level)
   {
-      va_start(ap, zFormat);
-      zMsg = sqlite3_vmprintf(zFormat, ap);
-      va_end(ap);
-      pInfo->xOut(zMsg, pInfo->pOutArg);
-      sqlite3_free(zMsg);
+      return;
   }
+
+  va_start(ap, zFormat);
+  zMsg = sqlite3_vmprintf(zFormat, ap);
+  va_end(ap);
+  pInfo->xOut(zMsg, pInfo->pOutArg);
+  sqlite3_free(zMsg);
 }
 
 /*
@@ -175,11 +189,18 @@ static void vfsc_printf(
 */
 static void vfsc_print_errcode(
   vfsc_info *pInfo,
+  TraceLevel level,
   const char *zFormat,
   int rc
 ){
   char zBuf[50];
   char *zVal;
+
+  if (pInfo->trace == None || pInfo->trace < level)
+  {
+      return;
+  }
+
   switch( rc ){
     case SQLITE_OK:         zVal = "SQLITE_OK";          break;
     case SQLITE_ERROR:      zVal = "SQLITE_ERROR";       break;
@@ -230,7 +251,7 @@ static void vfsc_print_errcode(
        break;
     }
   }
-  vfsc_printf(pInfo, zFormat, zVal);
+  vfsc_printf(pInfo, level, zFormat, zVal);
 }
 
 /*
@@ -369,24 +390,24 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
     vfsc_info *pInfo = pFile->pInfo;
     int rc = SQLITE_OK;
     if (pCache != NULL && pCache->origSize > 0 &&
-        (pCache->state == uncompressed || pCache->state == unwritten))
+        (pCache->state == Uncompressed || pCache->state == Unwritten))
     {
-        if (pCache->state == uncompressed)
+        if (pCache->state == Uncompressed)
         {
             // Compress...
             pCache->compSize = Compress(pCache->pOrigData, pCache->origSize, pCache->pCompData, CHUNK_SIZE_BYTES);
-            vfsc_printf(pInfo, "Compressed %d into %d bytes from offset %lld.\n", pCache->origSize, pCache->compSize, pCache->offset);
+            vfsc_printf(pInfo, Compression, "Compressed %d into %d bytes from offset %lld.\n", pCache->origSize, pCache->compSize, pCache->offset);
         }
 
         // Write the chunk.
-        vfsc_printf(pInfo, "> %s.Flush(%s,n=%d,ofst=%lld)",
+        vfsc_printf(pInfo, Compression, "> %s.Flush(%s,n=%d,ofst=%lld)",
             pInfo->zVfsName, pFile->zFName, pCache->compSize, pCache->offset);
-        vfsc_printf(pInfo, "  Chunk=%lld, Data=%d bytes", pCache->offset, pCache->compSize);
+        vfsc_printf(pInfo, Compression, "  Chunk=%lld, Data=%d bytes", pCache->offset, pCache->compSize);
         rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pCache->pCompData, pCache->compSize, pCache->offset);
-        vfsc_print_errcode(pInfo, " -> %s\n", rc);
+        vfsc_print_errcode(pInfo, Compression, " -> %s\n", rc);
 
         SetSparseRange(pFile->hFile, pCache->offset + pCache->compSize, CHUNK_SIZE_BYTES - pCache->compSize);
-        pCache->state = cached;
+        pCache->state = Cached;
     }
 
     return rc;
@@ -420,11 +441,11 @@ static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     {
         pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
         pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
-        vfsc_printf(pFile->pInfo, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
+        vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
 
     pChunk->offset = chunkOffset;
-    pChunk->state = cached;
+    pChunk->state = Cached;
     memset(pChunk->pOrigData + pChunk->origSize, 0, CHUNK_SIZE_BYTES - pChunk->origSize);
 
     return rc;
@@ -437,7 +458,7 @@ static int GetCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
 {
     int rc = 0;
     if (pFile->pInfo->pCache->offset != chunkOffset ||
-        pFile->pInfo->pCache->state == empty)
+        pFile->pInfo->pCache->state == Empty)
     {
         // Flush current cache if necessary.
         FlushChunk(pFile, pFile->pInfo->pCache);
@@ -463,9 +484,9 @@ static int vfscClose(sqlite3_file *pFile){
   CloseHandle(p->hFile);
   p->hFile = INVALID_HANDLE_VALUE;
 
-  vfsc_printf(pInfo, "%s.xClose(%s)", pInfo->zVfsName, p->zFName);
+  vfsc_printf(pInfo, OpenClose, "%s.xClose(%s)", pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xClose(p->pReal);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, OpenClose, " -> %s\n", rc);
   if( rc==SQLITE_OK ){
     sqlite3_free((void*)p->base.pMethods);
     p->base.pMethods = 0;
@@ -496,17 +517,17 @@ static int vfscRead(
       //TODO: Check if the required data crosses chunk boundaries.
       memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
 
-      vfsc_printf(pInfo, "> %s.xRead(%s,n=%d,ofst=%lld)",
+      vfsc_printf(pInfo, IoOps, "> %s.xRead(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
-      vfsc_printf(pInfo, "  Chunk=%lld", chunkOffset);
-      vfsc_print_errcode(pInfo, " -> %s\n", rc);
+      vfsc_printf(pInfo, IoOps, "  Chunk=%lld", chunkOffset);
+      vfsc_print_errcode(pInfo, IoOps, " -> %s\n", rc);
   }
   else
   {
-      vfsc_printf(pInfo, "%s.xRead(%s,n=%d,ofst=%lld)",
+      vfsc_printf(pInfo, IoOps, "%s.xRead(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
       rc = p->pReal->pMethods->xRead(p->pReal, zBuf, iAmt, iOfst);
-      vfsc_print_errcode(pInfo, " -> %s\n", rc);
+      vfsc_print_errcode(pInfo, IoOps, " -> %s\n", rc);
   }
 
   return rc;
@@ -535,7 +556,7 @@ static int vfscWrite(
 
       // Write the new data.
       memcpy(pInfo->pCache->pOrigData + offsetInChunk, zBuf, iAmt);
-      pInfo->pCache->state = uncompressed;
+      pInfo->pCache->state = Uncompressed;
       pInfo->pCache->origSize = max(pInfo->pCache->origSize, offsetInChunk + iAmt);
       if (pInfo->pCache->origSize > CHUNK_SIZE_BYTES)
       {
@@ -546,24 +567,24 @@ static int vfscWrite(
 #if 0
       // Compress...
       pInfo->pCache->compSize = Compress(pInfo->pCache->pOrigData, pInfo->pCache->origSize, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES);
-      vfsc_printf(pInfo, "> Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
+      vfsc_printf(pInfo, Compression, "> Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
 
       // Write the chunk.
       rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
       SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
 #endif
 
-      vfsc_printf(pInfo, "> %s.xWrite(%s,n=%d,ofst=%lld)",
+      vfsc_printf(pInfo, IoOps, "> %s.xWrite(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
-      vfsc_printf(pInfo, "  Chunk=%lld, Data=%d bytes", chunkOffset, pInfo->pCache->compSize);
-      vfsc_print_errcode(pInfo, " -> %s\n", rc);
+      vfsc_printf(pInfo, IoOps, "  Chunk=%lld, Data=%d bytes", chunkOffset, pInfo->pCache->compSize);
+      vfsc_print_errcode(pInfo, IoOps, " -> %s\n", rc);
   }
   else
   {
-      vfsc_printf(pInfo, "%s.xWrite(%s,n=%d,ofst=%lld)",
+      vfsc_printf(pInfo, IoOps, "%s.xWrite(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
       rc = p->pReal->pMethods->xWrite(p->pReal, zBuf, iAmt, iOfst);
-      vfsc_print_errcode(pInfo, " -> %s\n", rc);
+      vfsc_print_errcode(pInfo, IoOps, " -> %s\n", rc);
   }
 
   return rc;
@@ -576,10 +597,10 @@ static int vfscTruncate(sqlite3_file *pFile, sqlite_int64 size){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xTruncate(%s,%lld)", pInfo->zVfsName, p->zFName,
+  vfsc_printf(pInfo, NonIoOps, "%s.xTruncate(%s,%lld)", pInfo->zVfsName, p->zFName,
                   size);
   rc = p->pReal->pMethods->xTruncate(p->pReal, size);
-  vfsc_printf(pInfo, " -> %d\n", rc);
+  vfsc_printf(pInfo, NonIoOps, " -> %d\n", rc);
   return rc;
 }
 
@@ -603,10 +624,10 @@ static int vfscSync(sqlite3_file *pFile, int flags){
   if( flags & ~(SQLITE_SYNC_FULL|SQLITE_SYNC_DATAONLY) ){
     sqlite3_snprintf(sizeof(zBuf)-i, &zBuf[i], "|0x%x", flags);
   }
-  vfsc_printf(pInfo, "%s.xSync(%s,%s)", pInfo->zVfsName, p->zFName,
+  vfsc_printf(pInfo, NonIoOps, "%s.xSync(%s,%s)", pInfo->zVfsName, p->zFName,
                   &zBuf[1]);
   rc = p->pReal->pMethods->xSync(p->pReal, flags);
-  vfsc_printf(pInfo, " -> %d\n", rc);
+  vfsc_printf(pInfo, NonIoOps, " -> %d\n", rc);
   return rc;
 }
 
@@ -617,10 +638,10 @@ static int vfscFileSize(sqlite3_file *pFile, sqlite_int64 *pSize){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xFileSize(%s)", pInfo->zVfsName, p->zFName);
+  vfsc_printf(pInfo, NonIoOps, "%s.xFileSize(%s)", pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xFileSize(p->pReal, pSize);
-  vfsc_print_errcode(pInfo, " -> %s,", rc);
-  vfsc_printf(pInfo, " size=%lld\n", *pSize);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s,", rc);
+  vfsc_printf(pInfo, NonIoOps, " size=%lld\n", *pSize);
   return rc;
 }
 
@@ -645,10 +666,10 @@ static int vfscLock(sqlite3_file *pFile, int eLock){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xLock(%s,%s)", pInfo->zVfsName, p->zFName,
+  vfsc_printf(pInfo, NonIoOps, "%s.xLock(%s,%s)", pInfo->zVfsName, p->zFName,
                   lockName(eLock));
   rc = p->pReal->pMethods->xLock(p->pReal, eLock);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 
@@ -659,10 +680,10 @@ static int vfscUnlock(sqlite3_file *pFile, int eLock){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xUnlock(%s,%s)", pInfo->zVfsName, p->zFName,
+  vfsc_printf(pInfo, NonIoOps, "%s.xUnlock(%s,%s)", pInfo->zVfsName, p->zFName,
                   lockName(eLock));
   rc = p->pReal->pMethods->xUnlock(p->pReal, eLock);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 
@@ -673,11 +694,11 @@ static int vfscCheckReservedLock(sqlite3_file *pFile, int *pResOut){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xCheckReservedLock(%s,%d)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xCheckReservedLock(%s,%d)",
                   pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xCheckReservedLock(p->pReal, pResOut);
-  vfsc_print_errcode(pInfo, " -> %s", rc);
-  vfsc_printf(pInfo, ", out=%d\n", *pResOut);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s", rc);
+  vfsc_printf(pInfo, NonIoOps, ", out=%d\n", *pResOut);
   return rc;
 }
 
@@ -719,10 +740,10 @@ static int vfscFileControl(sqlite3_file *pFile, int op, void *pArg){
       break;
     }
   }
-  vfsc_printf(pInfo, "%s.xFileControl(%s,%s)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xFileControl(%s,%s)",
                   pInfo->zVfsName, p->zFName, zOp);
   rc = p->pReal->pMethods->xFileControl(p->pReal, op, pArg);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 
@@ -733,9 +754,9 @@ static int vfscSectorSize(sqlite3_file *pFile){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xSectorSize(%s)", pInfo->zVfsName, p->zFName);
+  vfsc_printf(pInfo, NonIoOps, "%s.xSectorSize(%s)", pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xSectorSize(p->pReal);
-  vfsc_printf(pInfo, " -> %d\n", rc);
+  vfsc_printf(pInfo, NonIoOps, " -> %d\n", rc);
   return rc;
 }
 
@@ -746,10 +767,10 @@ static int vfscDeviceCharacteristics(sqlite3_file *pFile){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xDeviceCharacteristics(%s)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xDeviceCharacteristics(%s)",
                   pInfo->zVfsName, p->zFName);
   rc = p->pReal->pMethods->xDeviceCharacteristics(p->pReal);
-  vfsc_printf(pInfo, " -> 0x%08x\n", rc);
+  vfsc_printf(pInfo, NonIoOps, " -> 0x%08x\n", rc);
   return rc;
 }
 
@@ -770,10 +791,10 @@ static int vfscShmLock(sqlite3_file *pFile, int ofst, int n, int flags){
   if( flags & ~(0xf) ){
      sqlite3_snprintf(sizeof(zLck)-i, &zLck[i], "|0x%x", flags);
   }
-  vfsc_printf(pInfo, "%s.xShmLock(%s,ofst=%d,n=%d,%s)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xShmLock(%s,ofst=%d,n=%d,%s)",
                   pInfo->zVfsName, p->zFName, ofst, n, &zLck[1]);
   rc = p->pReal->pMethods->xShmLock(p->pReal, ofst, n, flags);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 static int vfscShmMap(
@@ -786,26 +807,26 @@ static int vfscShmMap(
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xShmMap(%s,iRegion=%d,szRegion=%d,isWrite=%d,*)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xShmMap(%s,iRegion=%d,szRegion=%d,isWrite=%d,*)",
                   pInfo->zVfsName, p->zFName, iRegion, szRegion, isWrite);
   rc = p->pReal->pMethods->xShmMap(p->pReal, iRegion, szRegion, isWrite, pp);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 static void vfscShmBarrier(sqlite3_file *pFile){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
-  vfsc_printf(pInfo, "%s.xShmBarrier(%s)\n", pInfo->zVfsName, p->zFName);
+  vfsc_printf(pInfo, NonIoOps, "%s.xShmBarrier(%s)\n", pInfo->zVfsName, p->zFName);
   p->pReal->pMethods->xShmBarrier(p->pReal);
 }
 static int vfscShmUnmap(sqlite3_file *pFile, int delFlag){
   vfsc_file *p = (vfsc_file *)pFile;
   vfsc_info *pInfo = p->pInfo;
   int rc;
-  vfsc_printf(pInfo, "%s.xShmUnmap(%s,delFlag=%d)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xShmUnmap(%s,delFlag=%d)",
                   pInfo->zVfsName, p->zFName, delFlag);
   rc = p->pReal->pMethods->xShmUnmap(p->pReal, delFlag);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 
@@ -893,7 +914,7 @@ static int vfscOpen(
   p->hFile = INVALID_HANDLE_VALUE;
   rc = pRoot->xOpen(pRoot, zName, p->pReal, flags, pOutFlags);
 
-  vfsc_printf(pInfo, "%s.xOpen(%s,flags=0x%x)",
+  vfsc_printf(pInfo, OpenClose, "%s.xOpen(%s,flags=0x%x)",
       pInfo->zVfsName, p->zFName, flags);
 
   if( p->pReal->pMethods ){
@@ -921,11 +942,11 @@ static int vfscOpen(
     }
     pFile->pMethods = pNew;
   }
-  vfsc_print_errcode(pInfo, " -> %s", rc);
+  vfsc_print_errcode(pInfo, OpenClose, " -> %s", rc);
   if( pOutFlags ){
-    vfsc_printf(pInfo, ", outFlags=0x%x\n", *pOutFlags);
+    vfsc_printf(pInfo, OpenClose, ", outFlags=0x%x\n", *pOutFlags);
   }else{
-    vfsc_printf(pInfo, "\n");
+    vfsc_printf(pInfo, OpenClose, "\n");
   }
 
   if (rc == SQLITE_OK &&
@@ -933,11 +954,11 @@ static int vfscOpen(
   {
       // Now reopen the file and mark it sparse.
       p->hFile = OpenSparseFile(zName);
-      vfsc_printf(pInfo, "> %s.xOpen(%s) -> %x", pInfo->zVfsName, p->zFName, GetLastError());
+      vfsc_printf(pInfo, OpenClose, "> %s.xOpen(%s) -> %x", pInfo->zVfsName, p->zFName, GetLastError());
       if (p->hFile != INVALID_HANDLE_VALUE)
       {
           int compressed = IsCompressed(p->hFile);
-          vfsc_printf(pInfo, " -> %s\n", compressed ? "Compressed" : "Plain");
+          vfsc_printf(pInfo, OpenClose, " -> %s\n", compressed ? "Compressed" : "Plain");
           if (!compressed)
           {
               CloseHandle(p->hFile);
@@ -958,10 +979,10 @@ static int vfscDelete(sqlite3_vfs *pVfs, const char *zPath, int dirSync){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
   int rc;
-  vfsc_printf(pInfo, "%s.xDelete(\"%s\",%d)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xDelete(\"%s\",%d)",
                   pInfo->zVfsName, zPath, dirSync);
   rc = pRoot->xDelete(pRoot, zPath, dirSync);
-  vfsc_print_errcode(pInfo, " -> %s\n", rc);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s\n", rc);
   return rc;
 }
 
@@ -978,11 +999,11 @@ static int vfscAccess(
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
   int rc;
-  vfsc_printf(pInfo, "%s.xAccess(\"%s\",%d)",
+  vfsc_printf(pInfo, NonIoOps, "%s.xAccess(\"%s\",%d)",
                   pInfo->zVfsName, zPath, flags);
   rc = pRoot->xAccess(pRoot, zPath, flags, pResOut);
-  vfsc_print_errcode(pInfo, " -> %s", rc);
-  vfsc_printf(pInfo, ", out=%d\n", *pResOut);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s", rc);
+  vfsc_printf(pInfo, NonIoOps, ", out=%d\n", *pResOut);
   return rc;
 }
 
@@ -1000,11 +1021,11 @@ static int vfscFullPathname(
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
   int rc;
-  vfsc_printf(pInfo, "%s.xFullPathname(\"%s\")",
+  vfsc_printf(pInfo, NonIoOps, "%s.xFullPathname(\"%s\")",
                   pInfo->zVfsName, zPath);
   rc = pRoot->xFullPathname(pRoot, zPath, nOut, zOut);
-  vfsc_print_errcode(pInfo, " -> %s", rc);
-  vfsc_printf(pInfo, ", out=\"%.*s\"\n", nOut, zOut);
+  vfsc_print_errcode(pInfo, NonIoOps, " -> %s", rc);
+  vfsc_printf(pInfo, NonIoOps, ", out=\"%.*s\"\n", nOut, zOut);
   return rc;
 }
 
@@ -1014,7 +1035,7 @@ static int vfscFullPathname(
 static void *vfscDlOpen(sqlite3_vfs *pVfs, const char *zPath){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
-  vfsc_printf(pInfo, "%s.xDlOpen(\"%s\")\n", pInfo->zVfsName, zPath);
+  vfsc_printf(pInfo, NonIoOps, "%s.xDlOpen(\"%s\")\n", pInfo->zVfsName, zPath);
   return pRoot->xDlOpen(pRoot, zPath);
 }
 
@@ -1026,9 +1047,9 @@ static void *vfscDlOpen(sqlite3_vfs *pVfs, const char *zPath){
 static void vfscDlError(sqlite3_vfs *pVfs, int nByte, char *zErrMsg){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
-  vfsc_printf(pInfo, "%s.xDlError(%d)", pInfo->zVfsName, nByte);
+  vfsc_printf(pInfo, NonIoOps, "%s.xDlError(%d)", pInfo->zVfsName, nByte);
   pRoot->xDlError(pRoot, nByte, zErrMsg);
-  vfsc_printf(pInfo, " -> \"%s\"", zErrMsg);
+  vfsc_printf(pInfo, NonIoOps, " -> \"%s\"", zErrMsg);
 }
 
 /*
@@ -1037,7 +1058,7 @@ static void vfscDlError(sqlite3_vfs *pVfs, int nByte, char *zErrMsg){
 static void (*vfscDlSym(sqlite3_vfs *pVfs,void *p,const char *zSym))(void){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
-  vfsc_printf(pInfo, "%s.xDlSym(\"%s\")\n", pInfo->zVfsName, zSym);
+  vfsc_printf(pInfo, NonIoOps, "%s.xDlSym(\"%s\")\n", pInfo->zVfsName, zSym);
   return pRoot->xDlSym(pRoot, p, zSym);
 }
 
@@ -1047,7 +1068,7 @@ static void (*vfscDlSym(sqlite3_vfs *pVfs,void *p,const char *zSym))(void){
 static void vfscDlClose(sqlite3_vfs *pVfs, void *pHandle){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
-  vfsc_printf(pInfo, "%s.xDlOpen()\n", pInfo->zVfsName);
+  vfsc_printf(pInfo, NonIoOps, "%s.xDlOpen()\n", pInfo->zVfsName);
   pRoot->xDlClose(pRoot, pHandle);
 }
 
@@ -1058,7 +1079,7 @@ static void vfscDlClose(sqlite3_vfs *pVfs, void *pHandle){
 static int vfscRandomness(sqlite3_vfs *pVfs, int nByte, char *zBufOut){
   vfsc_info *pInfo = (vfsc_info*)pVfs->pAppData;
   sqlite3_vfs *pRoot = pInfo->pRootVfs;
-  vfsc_printf(pInfo, "%s.xRandomness(%d)\n", pInfo->zVfsName, nByte);
+  vfsc_printf(pInfo, NonIoOps, "%s.xRandomness(%d)\n", pInfo->zVfsName, nByte);
   return pRoot->xRandomness(pRoot, nByte, zBufOut);
 }
 
@@ -1123,15 +1144,15 @@ static const char *vfscNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 
 
 /*
-** Clients invoke this routine to construct a new trace-vfs shim.
+** Clients invoke this routine to construct a new vfs-compress shim.
 **
 ** Return SQLITE_OK on success.
 **
 ** SQLITE_NOMEM is returned in the case of a memory allocation error.
 ** SQLITE_NOTFOUND is returned if zOldVfsName does not exist.
 */
-SQLITE_API int vfscompress_register(
-   int trace,                  /* True to trace operations to stderr */
+SQLITE_API int sqlite3_compress(
+   int trace,                  /* See TraceLevel. 0 to disable. */
    int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
 ){
   sqlite3_vfs *pNew;
@@ -1186,22 +1207,26 @@ SQLITE_API int vfscompress_register(
   pInfo->pOutArg = stderr;
   pInfo->zVfsName = pNew->zName;
   pInfo->pTraceVfs = pNew;
-  pInfo->trace = trace;
+  pInfo->trace = trace >= Maximum ? Maximum : (trace < None ? OpenClose : trace);
 
   pInfo->pCache = (vfsc_chunk*)sqlite3_malloc(sizeof(vfsc_chunk));
   memset(pInfo->pCache, 0, sizeof(vfsc_chunk));
   if( pInfo->pCache==0 ) return SQLITE_NOMEM;
   pInfo->pCache->origSize = -1;
 
-  if (!pInfo->trace)
-  {
-      pInfo->trace = 1;
-      vfsc_printf(pInfo, "%s.enabled_for(\"%s\")\n",
-          pInfo->zVfsName, pRoot->zName);
-  }
+  vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\")\n",
+      pInfo->zVfsName, pRoot->zName);
 
-  pInfo->trace = trace;
   return sqlite3_vfs_register(pNew, 1);
+}
+
+#else
+
+SQLITE_API int sqlite3_compress(
+   int trace,                  /* See TraceLevel. 0 to disable. */
+   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
+){
+  return SQLITE_OK;
 }
 
 #endif /* SQLITE_OS_WIN */

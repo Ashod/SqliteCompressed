@@ -6653,7 +6653,14 @@ int sqlite3_vtab_on_conflict(sqlite3 *);
 /* #define SQLITE_ABORT 4  // Also an error code */
 #define SQLITE_REPLACE  5
 
-
+/*
+** This function enables built-in, online compression.
+** It's only available on Windows.
+*/
+int sqlite3_compress(
+   int trace,                  /* See TraceLevel. 0 to disable. */
+   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
+);
 
 /*
 ** Undo the hack that converts floating point types to integer for

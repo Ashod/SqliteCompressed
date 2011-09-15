@@ -2290,11 +2290,12 @@ int sqlite3_open(
   sqlite3 **ppDb 
 ){
 #if SQLITE_TEST || VFS_COMPRESS_ENABLE
-    extern int vfscompress_register(
+    extern int sqlite3_compress(
         int trace,
         int compressionLevel
         );
-    vfscompress_register(0, -1);
+	//printf("sqlite3_compress\n");
+    sqlite3_compress(-1, -1);
 #endif
 
   return openDatabase(zFilename, ppDb,

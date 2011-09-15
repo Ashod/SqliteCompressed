@@ -9,7 +9,7 @@
 #include <Windows.h>
 #include <time.h>
 
-extern "C" int vfscompress_register(
+extern "C" int sqlite3_compress(
     int trace,
     int compressionLevel
     );
@@ -78,7 +78,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     //srand(time(NULL));
 
     DeleteFile(dbFilename);
-    vfscompress_register(0, -1);
+    sqlite3_compress(0, -1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -201,7 +201,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
-    vfscompress_register(1,1);
+    sqlite3_compress(1,1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -222,9 +222,9 @@ void QueryWikideskDB(_TCHAR* dbFilename)
 int QuickTest(LPCTSTR lpFilename, char* query)
 {
     sqlite3 *db;
-    //DeleteFile(lpFilename);
+    DeleteFile(lpFilename);
 
-    vfscompress_register(0, -1);
+    sqlite3_compress(-1, -1);
     int rc = sqlite3_open(lpFilename, &db);
 
     if (rc == SQLITE_OK)
