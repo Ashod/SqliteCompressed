@@ -265,6 +265,38 @@ static void strappend(char *z, int *pI, const char *zAppend){
   *pI = i;
 }
 
+/*
+** Decompression interface.
+** Returns the output size in bytes.
+*/
+static int Decompress(const void* input, int* input_length, void* output, int max_output_length)
+{
+    int ret;
+    unsigned output_length;
+    z_stream strm;
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    strm.avail_in = 0;
+    strm.next_in = Z_NULL;
+    ret = inflateInit(&strm);
+    if (ret != Z_OK)
+    {
+        return -1;
+    }
+
+    strm.avail_in = *input_length;
+    strm.next_in = (Bytef*)input;
+    strm.avail_out = max_output_length;
+    strm.next_out = (Bytef*)output;
+    ret = inflate(&strm, Z_NO_FLUSH);
+
+    *input_length = strm.total_in;
+    output_length = max_output_length - strm.avail_out;
+    (void)inflateEnd(&strm);
+
+    return output_length;
+}
 
 /*
 ** Compression interface.
@@ -295,48 +327,17 @@ static int Compress(const void* input, int input_length, void* output, int max_o
     (void)deflateEnd(&strm);
 
     {
-#if 0
+#if 1
         char dout[CHUNK_SIZE_BYTES];
-        int dec = Decompress(output, CHUNK_SIZE_BYTES, dout, CHUNK_SIZE_BYTES);
-        if (dec != input_length)
+        int size = CHUNK_SIZE_BYTES;
+        int dec = Decompress(output, &size, dout, CHUNK_SIZE_BYTES);
+        if (dec != input_length || memcmp(dout, input, input_length) != 0)
         {
             printf("ERROR: Decompression failure!\n");
             exit(1);
         }
 #endif
     }
-
-    return output_length;
-}
-
-/*
-** Decompression interface.
-** Returns the output size in bytes.
-*/
-static int Decompress(const void* input, int input_length, void* output, int max_output_length)
-{
-    int ret;
-    unsigned output_length;
-    z_stream strm;
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    strm.avail_in = 0;
-    strm.next_in = Z_NULL;
-    ret = inflateInit(&strm);
-    if (ret != Z_OK)
-    {
-        return -1;
-    }
-
-    strm.avail_in = input_length;
-    strm.next_in = (Bytef*)input;
-    strm.avail_out = max_output_length;
-    strm.next_out = (Bytef*)output;
-    ret = inflate(&strm, Z_NO_FLUSH);
-
-    output_length = max_output_length - strm.avail_out;
-    (void)inflateEnd(&strm);
 
     return output_length;
 }
@@ -421,10 +422,13 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
 static int FlushCache(vfsc_file *pFile)
 {
     vfsc_info *pInfo = pFile->pInfo;
-
+    if (pFile->hFile == INVALID_HANDLE_VALUE)
+    {
+        return SQLITE_OK;
+    }
+   
     //TODO: Iterate over the complete cache and flush each chunk.
-    vfsc_chunk *pCache = pInfo->pCache;
-    return FlushChunk(pFile, pCache);
+    return FlushChunk(pFile, pInfo->pCache);
 }
 
 static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
@@ -446,7 +450,7 @@ static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
     else
     {
         pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
-        pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
+        pChunk->origSize = Decompress(pChunk->pCompData, &pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
         pChunk->state = Cached;
         vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
