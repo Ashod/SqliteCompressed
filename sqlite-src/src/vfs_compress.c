@@ -61,6 +61,7 @@ typedef enum TraceLevel
     NonIoOps,
     Compression,
     IoOps,
+    Trace,
     Maximum
 } TraceLevel;
 
@@ -389,10 +390,9 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
 {
     vfsc_info *pInfo = pFile->pInfo;
     int rc = SQLITE_OK;
-    if (pCache != NULL && pCache->origSize > 0 &&
-        (pCache->state == Uncompressed || pCache->state == Unwritten))
+    if (pCache != NULL && pCache->origSize > 0 && pCache->state != Empty && pCache->state != Cached)
     {
-        if (pCache->state == Uncompressed)
+        //if (pCache->state == Uncompressed)
         {
             // Compress...
             pCache->compSize = Compress(pCache->pOrigData, pCache->origSize, pCache->pCompData, CHUNK_SIZE_BYTES);
@@ -408,6 +408,11 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
 
         SetSparseRange(pFile->hFile, pCache->offset + pCache->compSize, CHUNK_SIZE_BYTES - pCache->compSize);
         pCache->state = Cached;
+    }
+    else
+    {
+        vfsc_printf(pInfo, Trace, "> SKIPPED Flush(%s,n=%d,ofst=%lld)\n",
+            pInfo->zVfsName, pFile->zFName, pCache->compSize, pCache->offset);
     }
 
     return rc;
@@ -435,17 +440,18 @@ static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
         // The first byte should contain the length, hence can't be zero for compressed streams.
         pChunk->compSize = 0;
         pChunk->origSize = 0;
+        pChunk->state = Empty;
         //memset(pChunk->pCompData, 0, CHUNK_SIZE_BYTES);
     }
     else
     {
         pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
         pChunk->origSize = Decompress(pChunk->pCompData, pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
+        pChunk->state = Cached;
         vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
 
     pChunk->offset = chunkOffset;
-    pChunk->state = Cached;
     memset(pChunk->pOrigData + pChunk->origSize, 0, CHUNK_SIZE_BYTES - pChunk->origSize);
 
     return rc;
@@ -563,16 +569,6 @@ static int vfscWrite(
           printf("ERROR: CHUNK OVERRUN!!!!\n");
           exit(1);
       }
-
-#if 0
-      // Compress...
-      pInfo->pCache->compSize = Compress(pInfo->pCache->pOrigData, pInfo->pCache->origSize, pInfo->pCache->pCompData, CHUNK_SIZE_BYTES);
-      vfsc_printf(pInfo, Compression, "> Compressed %d into %d bytes from offset %lld.\n", pInfo->pCache->origSize, pInfo->pCache->compSize, chunkOffset);
-
-      // Write the chunk.
-      rc = p->pReal->pMethods->xWrite(p->pReal, pInfo->pCache->pCompData, pInfo->pCache->compSize, chunkOffset);
-      SetSparseRange(p->hFile, chunkOffset + pInfo->pCache->compSize, CHUNK_SIZE_BYTES - pInfo->pCache->compSize);
-#endif
 
       vfsc_printf(pInfo, IoOps, "> %s.xWrite(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);

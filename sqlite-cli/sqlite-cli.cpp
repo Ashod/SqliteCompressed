@@ -30,7 +30,7 @@ static int callback(void *NotUsed, int argc, char **argv, char **azColName)
 
 const char* GenerateText(int length)
 {
-    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-";
+    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`";
     const int ALPHA_COUNT = sizeof(alpha) - 1;
 
     char* text = new char[length + 1];
@@ -43,22 +43,20 @@ const char* GenerateText(int length)
     return text;
 }
 
-const char* expected_value;
-static int callback_check(void *NotUsed, int argc, char **argv, char **azColName)
+static int callback_check(void *expected_value, int argc, char **argv, char **azColName)
 {
-    int i;
-    NotUsed=0;
-
-    for(i=0; i<argc; i++)
+    for (int i = 0; i < argc; i++)
     {
-        if (strcmp(expected_value, argv[i]) != 0)
+        if (strcmp((char*)expected_value, argv[i]) != 0)
         {
-            printf("ERROR: value mismatch.\nExpected: %s\n Got: %s\n", expected_value, argv[i]);
+            printf("ERROR: value mismatch.\nExpected length: %d, Got: %d\n", strlen((char*)expected_value), strlen(argv[i]));
             exit(1);
         }
         else
         {
+            // Got it, break the query.
             printf("++PASS++\n");
+            return 1;
         }
     }
 
@@ -75,10 +73,10 @@ void CreateLargeDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
-    //srand(time(NULL));
+    srand(0);
 
     DeleteFile(dbFilename);
-    sqlite3_compress(0, -1);
+    sqlite3_compress(1, -1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -91,12 +89,14 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     DWORD start = GetTickCount();
 
-    const int ROW_COUNT = 100;
-    const int MAX_DATA_SIZE = 300 * 1024;
+    const int ROW_COUNT = 2;
+    const int MAX_DATA_SIZE = 4400 * 1024;
     const char* test_data[ROW_COUNT];
+    memset(test_data, 0, sizeof(test_data));
     char* buffer = new char[(MAX_DATA_SIZE * 2) + 128];
     const char const* INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
 
+    printf("\n>>>> Inserting\n");
     for (int c = 0; (c < ROW_COUNT) && (rc == SQLITE_OK); ++c)
     {
         int data_size = ((int)rand() * (int)rand()) % MAX_DATA_SIZE;
@@ -104,55 +104,70 @@ void CreateLargeDB(_TCHAR* dbFilename)
         sprintf(buffer, INSERT_COMMAND, test_data[c], c);
         printf("%d) Inserting %d bytes...\n", c, data_size);
         rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
-        if (rc != SQLITE_OK)
+
+        if ((rc != SQLITE_OK) && (rc != SQLITE_ABORT))
         {
-            printf("%d) Insertion failed! Error code: %d.\n", c, rc);
+            fprintf(stderr, "Error: %s\n", zErrMsg);
+            break;
         }
     }
 
-    printf(">>>> Reading\n");
+    printf("\n>>>> Reading\n");
     const char const* SELECT_COMMAND = "SELECT data FROM t1 WHERE num = %d;";
 
-    for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
+    for (int c = ROW_COUNT - 1; (c >= 0) && ((rc == SQLITE_OK) || (rc == SQLITE_ABORT)); --c)
     {
-        printf("%d) Selecting...\n", c);
+        printf("%d) Selecting... ", c);
         sprintf(buffer, SELECT_COMMAND, c);
-        expected_value = test_data[c];
-        rc = sqlite3_exec(db, buffer, callback_check, 0, &zErrMsg);
+        rc = sqlite3_exec(db, buffer, callback_check, (void*)test_data[c], &zErrMsg);
+        delete [] test_data[c];
+        test_data[c] = NULL;
+
+        if ((rc != SQLITE_OK) && (rc != SQLITE_ABORT))
+        {
+            fprintf(stderr, "Error: %s\n", zErrMsg);
+            break;
+        }
     }
 
-    printf(">>>> Updating\n");
+    rc = SQLITE_OK;
+    printf("\n>>>> Updating\n");
     const char const* UPDATE_COMMAND = "UPDATE t1 set data = '%s' WHERE num = %d;";
 
     for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
     {
         int data_size = ((int)rand() * (int)rand()) % (MAX_DATA_SIZE * 2);
         delete [] test_data[c];
+        test_data[c] = NULL;
         test_data[c] = GenerateText(data_size);
         sprintf(buffer, UPDATE_COMMAND, test_data[c], c);
         printf("%d) Updating %d bytes...\n", c, data_size);
         rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
-        if (rc != SQLITE_OK)
+
+        if ((rc != SQLITE_OK) && (rc != SQLITE_ABORT))
         {
-            printf("%d) Update failed! Error code: %d.\n", c, rc);
+            fprintf(stderr, "Error: %s\n", zErrMsg);
+            break;
         }
     }
 
-    printf(">>>> Reading\n");
-    for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
+    printf("\n>>>> Reading\n");
+    for (int c = ROW_COUNT - 1; c >= 0; --c)
     {
-        printf("%d) Selecting...\n", c);
+        printf("%d) Selecting... ", c);
         sprintf(buffer, SELECT_COMMAND, c);
-        expected_value = test_data[c];
-        rc = sqlite3_exec(db, buffer, callback_check, 0, &zErrMsg);
+        rc = sqlite3_exec(db, buffer, callback_check, (void*)test_data[c], &zErrMsg);
         delete [] test_data[c];
+        test_data[c] = NULL;
+
+        if ((rc != SQLITE_OK) && (rc != SQLITE_ABORT))
+        {
+            fprintf(stderr, "Error: %s\n", zErrMsg);
+            break;
+        }
     }
 
-    if( rc!=SQLITE_OK ){
-        fprintf(stderr, "SQL error: %s\n", zErrMsg);
-    }
-
-    printf("Finished in %dms\n", GetTickCount() - start);
+    printf("\nFinished in %dms\n", GetTickCount() - start);
 
     sqlite3_close(db);
 
@@ -183,7 +198,7 @@ BOOL GetSparseFileSize(LPCTSTR lpFileName)
     liSparseFileCompressedSize.LowPart = GetCompressedFileSize(lpFileName,
         (LPDWORD)&liSparseFileCompressedSize.HighPart);
     // Print the result
-    _tprintf(_T("\nFile total size: %I64uKB\nActual size on disk: %I64uKB\n"),
+    _tprintf(_T("\nFile total size: %I64u KB\nActual size on disk: %I64u KB\n"),
         liSparseFileSize.QuadPart / 1024,
         liSparseFileCompressedSize.QuadPart / 1024);
 
@@ -252,6 +267,9 @@ int _tmain(int argc, _TCHAR* argv[])
     int nrow;
     int ncol;
 
+    CreateLargeDB("Z:\\test.db");
+    return 0;
+
     QuickTest("Z:\\test.db", 
         "CREATE TABLE abc(a PRIMARY KEY, b, c);\
         INSERT INTO abc VALUES(1, 2, 3);\
@@ -267,7 +285,6 @@ int _tmain(int argc, _TCHAR* argv[])
         SELECT * FROM abc;");
 
     //QueryWikideskDB("Z:\\wikidesk.db");
-    //CreateLargeDB("Z:\\test.db");
     return 0;
 
     if( argc!=3 ){
