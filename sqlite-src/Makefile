@@ -875,17 +875,18 @@ testfixture$(TEXE):	$(TESTFIXTURE_SRC)
 	$(LTLINK) -DSQLITE_NO_SYNC=1 $(TEMP_STORE) $(TESTFIXTURE_FLAGS) \
 		-o $@ $(TESTFIXTURE_SRC) $(LIBTCL) $(TLIBS) -lz
 
+build_tests:	testfixture$(TEXE) sqlite3$(TEXE)
 
-fulltest:	testfixture$(TEXE) sqlite3$(TEXE)
+fulltest:	build_tests
 	./testfixture$(TEXE) $(TOP)/test/all.test
 
-soaktest:	testfixture$(TEXE) sqlite3$(TEXE)
+soaktest:	build_tests
 	./testfixture$(TEXE) $(TOP)/test/all.test -soak=1
 
-test:	testfixture$(TEXE) sqlite3$(TEXE)
+test:	build_tests
 	./testfixture$(TEXE) $(TOP)/test/veryquick.test
 
-vfs_compress_test:	testfixture$(TEXE) sqlite3$(TEXE)
+compresstest:	build_tests
 	./testfixture$(TEXE) $(TOP)/test/vfs_compress.test
 
 sqlite3_analyzer$(TEXE):	$(TESTFIXTURE_SRC) $(TOP)/tool/spaceanal.tcl
@@ -958,4 +959,4 @@ sqlite3.def: $(REAL_LIBOBJ)
 
 sqlite3.dll: $(REAL_LIBOBJ) sqlite3.def
 	$(TCC) -shared -o $@ sqlite3.def \
-		-Wl,"--strip-all" $(REAL_LIBOBJ)
+		-Wl,"--strip-all" $(REAL_LIBOBJ) libz.a
