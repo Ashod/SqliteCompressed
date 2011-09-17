@@ -6662,7 +6662,7 @@ SQLITE_API int sqlite3_vtab_on_conflict(sqlite3 *);
 ** This function enables built-in, online compression.
 ** It's only available on Windows.
 */
-int vfscompress_register(
+SQLITE_API int sqlite3_compress(
    int trace,                  /* See TraceLevel. 0 to disable. */
    int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
 );
