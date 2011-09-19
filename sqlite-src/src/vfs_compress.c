@@ -1,5 +1,6 @@
 /*
-** 2011 Sep 03
+** 2011 Sep 03 - Ashod Nakashian (ashodnakashian.com)
+** Released: 2011 Sep 18 - EXPERIMENTAL.
 **
 ** The author disclaims copyright to this source code.  In place of
 ** a legal notice, here is a blessing:
@@ -10,7 +11,8 @@
 **
 ******************************************************************************
 **
-** This file contains code implements a VFS shim that writes compressed database.
+** This file contains code implements a VFS shim that read/writes compressed database.
+** Based on the trace VFS shim.
 **
 ** USAGE:
 **
@@ -20,6 +22,10 @@
 **       int trace,                  // True to trace operations to stderr
 **       int compressionLevel        // The compression level: -1 for default, 1 fastest, 9 best
 **   );
+**
+** BUILD:
+**
+** Compile this file and link with Zlib library to Sqlite3. 
 **
 */
 #include "sqliteInt.h"
@@ -327,7 +333,7 @@ static int Compress(const void* input, int input_length, void* output, int max_o
     (void)deflateEnd(&strm);
 
     {
-#if 1
+#if 0
         char dout[CHUNK_SIZE_BYTES];
         int size = CHUNK_SIZE_BYTES;
         int dec = Decompress(output, &size, dout, CHUNK_SIZE_BYTES);
