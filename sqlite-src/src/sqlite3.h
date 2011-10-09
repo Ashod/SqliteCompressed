@@ -6663,8 +6663,9 @@ SQLITE_API int sqlite3_vtab_on_conflict(sqlite3 *);
 ** It's only available on Windows.
 */
 SQLITE_API int sqlite3_compress(
-   int trace,                  /* See TraceLevel. 0 to disable. */
-   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
+    int trace,                  /* See TraceLevel. 0 to disable. */
+    int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
+    int chunkSizeBytes          /* The size of the compression chunk in bytes: -1 for default */
 );
 
 /*

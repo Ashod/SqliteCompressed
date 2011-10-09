@@ -20,7 +20,8 @@
 **
 **   int sqlite3_compress(
 **       int trace,                  // True to trace operations to stderr
-**       int compressionLevel        // The compression level: -1 for default, 1 fastest, 9 best
+**       int compressionLevel,       // The compression level: -1 for default, 1 fastest, 9 best
+**       int chunkSizeBytes          // The size of the compression chunk in bytes: -1 for default
 **   );
 **
 ** BUILD:
@@ -49,7 +50,8 @@ extern void *convertUtf8Filename(const char *zFilename);
 ** It must be in multiple of max-page-size.
 ** Defaults to 4 max-pages (64k * 4).
 */
-#define CHUNK_SIZE_BYTES    (4 * 64 * 1024)
+#define COMPRESION_UNIT_SIZE_BYTES  (64 * 1024)
+#define DEF_CHUNK_SIZE_BYTES        (4 * COMPRESION_UNIT_SIZE_BYTES)
 
 enum State
 {
@@ -76,8 +78,8 @@ struct vfsc_chunk {
     sqlite_int64 offset;
     int origSize;
     int compSize;
-    char pOrigData[CHUNK_SIZE_BYTES + 1024];
-    char pCompData[CHUNK_SIZE_BYTES + 1024];
+    char* pOrigData;
+    char* pCompData;
     char state;
 };
 
@@ -151,7 +153,7 @@ static sqlite3_syscall_ptr vfscGetSystemCall(sqlite3_vfs*, const char *);
 static const char *vfscNextSystemCall(sqlite3_vfs*, const char *zName);
 
 static int CompressionLevel = Z_DEFAULT_COMPRESSION;
-
+static int ChunkSizeBytes = DEF_CHUNK_SIZE_BYTES;
 
 /*
 ** Return a pointer to the tail of the pathname.  Examples:
@@ -334,9 +336,9 @@ static int Compress(const void* input, int input_length, void* output, int max_o
 
     {
 #if 0
-        char dout[CHUNK_SIZE_BYTES];
-        int size = CHUNK_SIZE_BYTES;
-        int dec = Decompress(output, &size, dout, CHUNK_SIZE_BYTES);
+        char dout[ChunkSizeBytes];
+        int size = ChunkSizeBytes;
+        int dec = Decompress(output, &size, dout, ChunkSizeBytes);
         if (dec != input_length || memcmp(dout, input, input_length) != 0)
         {
             printf("ERROR: Decompression failure!\n");
@@ -386,7 +388,7 @@ static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
 
     if (res)
     {
-        return 0; //Sucess
+        return 0; // Success
     }
 
     // return the error value
@@ -399,10 +401,10 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
     int rc = SQLITE_OK;
     if (pCache != NULL && pCache->origSize > 0 && pCache->state != Empty && pCache->state != Cached)
     {
-        //if (pCache->state == Uncompressed)
+        if (pCache->state == Uncompressed)
         {
             // Compress...
-            pCache->compSize = Compress(pCache->pOrigData, pCache->origSize, pCache->pCompData, CHUNK_SIZE_BYTES);
+            pCache->compSize = Compress(pCache->pOrigData, pCache->origSize, pCache->pCompData, ChunkSizeBytes);
             vfsc_printf(pInfo, Compression, "Compressed %d into %d bytes from offset %lld.\n", pCache->origSize, pCache->compSize, pCache->offset);
         }
 
@@ -413,7 +415,7 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pCache)
         rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pCache->pCompData, pCache->compSize, pCache->offset);
         vfsc_print_errcode(pInfo, Compression, " -> %s\n", rc);
 
-        SetSparseRange(pFile->hFile, pCache->offset + pCache->compSize, CHUNK_SIZE_BYTES - pCache->compSize);
+        SetSparseRange(pFile->hFile, pCache->offset + pCache->compSize, ChunkSizeBytes - pCache->compSize);
         pCache->state = Cached;
     }
     else
@@ -439,7 +441,7 @@ static int FlushCache(vfsc_file *pFile)
 
 static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
 {
-    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, CHUNK_SIZE_BYTES, chunkOffset);
+    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, ChunkSizeBytes, chunkOffset);
     if (rc == SQLITE_IOERR_READ || rc == SQLITE_FULL)
     {
         return rc;
@@ -451,18 +453,18 @@ static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
         pChunk->compSize = 0;
         pChunk->origSize = 0;
         pChunk->state = Empty;
-        //memset(pChunk->pCompData, 0, CHUNK_SIZE_BYTES);
+        //memset(pChunk->pCompData, 0, ChunkSizeBytes);
     }
     else
     {
-        pChunk->compSize = CHUNK_SIZE_BYTES; //TODO: Check if we read less.
-        pChunk->origSize = Decompress(pChunk->pCompData, &pChunk->compSize, pChunk->pOrigData, sizeof(pChunk->pOrigData));
+        pChunk->compSize = ChunkSizeBytes; //TODO: Check if we read less.
+        pChunk->origSize = Decompress(pChunk->pCompData, &pChunk->compSize, pChunk->pOrigData, ChunkSizeBytes);
         pChunk->state = Cached;
         vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
 
     pChunk->offset = chunkOffset;
-    memset(pChunk->pOrigData + pChunk->origSize, 0, CHUNK_SIZE_BYTES - pChunk->origSize);
+    memset(pChunk->pOrigData + pChunk->origSize, 0, ChunkSizeBytes - pChunk->origSize);
 
     return rc;
 }
@@ -526,12 +528,12 @@ static int vfscRead(
 
   if (p->hFile != INVALID_HANDLE_VALUE)
   {
-      chunkOffset = iOfst - (iOfst % CHUNK_SIZE_BYTES);
+      chunkOffset = iOfst - (iOfst % ChunkSizeBytes);
       rc = GetCache(p, chunkOffset, &pInfo->pCache);
 
       // Copy the data from the cache.
       //TODO: Check if the required data crosses chunk boundaries.
-      memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % CHUNK_SIZE_BYTES), iAmt);
+      memcpy(zBuf, pInfo->pCache->pOrigData + (iOfst % ChunkSizeBytes), iAmt);
 
       vfsc_printf(pInfo, IoOps, "> %s.xRead(%s,n=%d,ofst=%lld)",
           pInfo->zVfsName, p->zFName, iAmt, iOfst);
@@ -566,7 +568,7 @@ static int vfscWrite(
   if (p->hFile != INVALID_HANDLE_VALUE)
   {
       // Get the cache chunk.
-      int offsetInChunk = iOfst % CHUNK_SIZE_BYTES;
+      int offsetInChunk = iOfst % ChunkSizeBytes;
       chunkOffset = iOfst - offsetInChunk;
       GetCache(p, chunkOffset, &pInfo->pCache);
 
@@ -574,7 +576,7 @@ static int vfscWrite(
       memcpy(pInfo->pCache->pOrigData + offsetInChunk, zBuf, iAmt);
       pInfo->pCache->state = Uncompressed;
       pInfo->pCache->origSize = max(pInfo->pCache->origSize, offsetInChunk + iAmt);
-      if (pInfo->pCache->origSize > CHUNK_SIZE_BYTES)
+      if (pInfo->pCache->origSize > ChunkSizeBytes)
       {
           printf("ERROR: CHUNK OVERRUN!!!!\n");
           exit(1);
@@ -1159,13 +1161,17 @@ static const char *vfscNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 */
 SQLITE_API int sqlite3_compress(
    int trace,                  /* See TraceLevel. 0 to disable. */
-   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
+   int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
+   int chunkSizeBytes          /* The size of the compression chunk in bytes: -1 for default */
 ){
   sqlite3_vfs *pNew;
   sqlite3_vfs *pRoot;
   vfsc_info *pInfo;
   int nName;
   int nByte;
+
+  int chunkSize = chunkSizeBytes / COMPRESION_UNIT_SIZE_BYTES;
+  ChunkSizeBytes = chunkSize <= 0 ? DEF_CHUNK_SIZE_BYTES : (chunkSize * COMPRESION_UNIT_SIZE_BYTES);
 
   CompressionLevel = compressionLevel;
 
@@ -1216,12 +1222,14 @@ SQLITE_API int sqlite3_compress(
   pInfo->trace = trace >= Maximum ? Maximum : (trace < None ? OpenClose : trace);
 
   pInfo->pCache = (vfsc_chunk*)sqlite3_malloc(sizeof(vfsc_chunk));
-  memset(pInfo->pCache, 0, sizeof(vfsc_chunk));
   if( pInfo->pCache==0 ) return SQLITE_NOMEM;
+  memset(pInfo->pCache, 0, sizeof(vfsc_chunk));
   pInfo->pCache->origSize = -1;
+  pInfo->pCache->pCompData = (char*)sqlite3_malloc( ChunkSizeBytes );
+  pInfo->pCache->pOrigData = (char*)sqlite3_malloc( ChunkSizeBytes );
 
-  vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\")\n",
-      pInfo->zVfsName, pRoot->zName);
+  vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes.\n",
+      pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024);
 
   return sqlite3_vfs_register(pNew, 1);
 }
@@ -1230,7 +1238,8 @@ SQLITE_API int sqlite3_compress(
 
 SQLITE_API int sqlite3_compress(
    int trace,                  /* See TraceLevel. 0 to disable. */
-   int compressionLevel        /* The compression level: -1 for default, 1 fastest, 9 best */
+   int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
+   int chunkSizeBytes          /* The size of the compression chunk in bytes: -1 for default */
 ){
   return SQLITE_OK;
 }

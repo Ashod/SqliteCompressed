@@ -2292,10 +2292,11 @@ int sqlite3_open(
 #if SQLITE_TEST || VFS_COMPRESS_ENABLE
     extern int sqlite3_compress(
         int trace,
-        int compressionLevel
+        int compressionLevel,
+        int chunkSizeBytes
         );
 	//printf("sqlite3_compress\n");
-    sqlite3_compress(-1, -1);
+    sqlite3_compress(-1, -1, -1);
 #endif
 
   return openDatabase(zFilename, ppDb,

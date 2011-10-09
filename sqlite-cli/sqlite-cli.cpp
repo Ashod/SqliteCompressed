@@ -10,8 +10,9 @@
 #include <time.h>
 
 extern "C" int sqlite3_compress(
-    int trace,
-    int compressionLevel
+    int trace,                  /* See TraceLevel. 0 to disable. */
+    int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
+    int chunkSizeBytes          /* The size of the compression chunk in bytes: -1 for default */
     );
 
 BOOL GetSparseFileSize(LPCTSTR lpFileName);
@@ -63,6 +64,38 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     return 0;
 }
 
+
+/*
+    Statistics:
+    Compression: level-6 zlib.
+    Data: 50 rows with random ascii of max size (1000 * 1024), updated to (2000 * 1024).
+    Alphabet: "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`".
+    Seed: srand(0).
+    Uncompressed file size: 50686 KB.
+
+    Chunk Size, Run Time (ms), Compressed Size (KB), Compression Ratio (%)
+    01 * 64 KB, 44906, 50686, 100
+    02 * 64 KB, 52219, 47728, 94.16
+    03 * 64 KB, 58547, 42272, 83.40
+    04 * 64 KB, 67688, 41184, 81.25
+    05 * 64 KB, 75563, 43088, 85.01
+    06 * 64 KB, 79641, 42240, 83.34
+    07 * 64 KB, 80672, 41648, 82.17
+    08 * 64 KB, 87859, 41184, 81.25
+    09 * 64 KB, 95047, 42240, 83.34
+    10 * 64 KB, 96516, 41824, 82.52
+    11 * 64 KB, 93016, 41472, 81.82
+    12 * 64 KB, 10492, 41184, 81.25
+    13 * 64 KB, 106016, 41904, 82.67
+    14 * 64 KB, 108469, 41632, 82.14
+    15 * 64 KB, 110265, 41392, 81.66
+    16 * 64 KB, 111204, 41184, 81.25
+    17 * 64 KB, 113516, 41744, 82.36
+    18 * 64 KB, 116954, 41536, 81.95
+    19 * 64 KB, 119563, 41360, 81.60
+    20 * 64 KB, 120328, 41184, 81.25
+*/
+
 void CreateLargeDB(_TCHAR* dbFilename)
 {
     sqlite3 *db;
@@ -76,7 +109,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     srand(0);
 
     DeleteFile(dbFilename);
-    sqlite3_compress(1, -1);
+    sqlite3_compress(1, -1, -1);
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -84,17 +117,17 @@ void CreateLargeDB(_TCHAR* dbFilename)
         exit(1);
     }
 
-    const char const* CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num INT, timeEnter DATE);";
+    const char* const CREATE_TABLE_COMMAND = "create table t1 (t1key INTEGER PRIMARY KEY, data TEXT, num INT, timeEnter DATE);";
     rc = sqlite3_exec(db, CREATE_TABLE_COMMAND, callback, 0, &zErrMsg);
 
     DWORD start = GetTickCount();
 
-    const int ROW_COUNT = 2;
-    const int MAX_DATA_SIZE = 4400 * 1024;
+    const int ROW_COUNT = 50;
+    const int MAX_DATA_SIZE = 1000 * 1024;
     const char* test_data[ROW_COUNT];
     memset(test_data, 0, sizeof(test_data));
     char* buffer = new char[(MAX_DATA_SIZE * 2) + 128];
-    const char const* INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
+    const char* const INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
 
     printf("\n>>>> Inserting\n");
     for (int c = 0; (c < ROW_COUNT) && (rc == SQLITE_OK); ++c)
@@ -113,7 +146,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     }
 
     printf("\n>>>> Reading\n");
-    const char const* SELECT_COMMAND = "SELECT data FROM t1 WHERE num = %d;";
+    const char* const SELECT_COMMAND = "SELECT data FROM t1 WHERE num = %d;";
 
     for (int c = ROW_COUNT - 1; (c >= 0) && ((rc == SQLITE_OK) || (rc == SQLITE_ABORT)); --c)
     {
@@ -132,7 +165,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     rc = SQLITE_OK;
     printf("\n>>>> Updating\n");
-    const char const* UPDATE_COMMAND = "UPDATE t1 set data = '%s' WHERE num = %d;";
+    const char* const UPDATE_COMMAND = "UPDATE t1 set data = '%s' WHERE num = %d;";
 
     for (int c = ROW_COUNT - 1; (c >= 0) && (rc == SQLITE_OK); --c)
     {
@@ -198,9 +231,10 @@ BOOL GetSparseFileSize(LPCTSTR lpFileName)
     liSparseFileCompressedSize.LowPart = GetCompressedFileSize(lpFileName,
         (LPDWORD)&liSparseFileCompressedSize.HighPart);
     // Print the result
-    _tprintf(_T("\nFile total size: %I64u KB\nActual size on disk: %I64u KB\n"),
+    _tprintf(_T("\nFile total size: %I64u KB\nActual size on disk: %I64u KB\nCompression Ratio: %.2f%%\n"),
         liSparseFileSize.QuadPart / 1024,
-        liSparseFileCompressedSize.QuadPart / 1024);
+        liSparseFileCompressedSize.QuadPart / 1024,
+        100.0 * liSparseFileCompressedSize.QuadPart / (double)liSparseFileSize.QuadPart);
 
     CloseHandle(hFile);
     return TRUE;
@@ -216,7 +250,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
     int nrow;
     int ncol;
 
-    sqlite3_compress(1,1);
+    sqlite3_compress(1, 1, -1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -225,7 +259,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
         exit(1);
     }
 
-    const char const* COMMAND = "SELECT Title FROM Page WHERE Title LIKE '%zimb%';";
+    const char* const COMMAND = "SELECT Title FROM Page WHERE Title LIKE '%zimb%';";
     rc = sqlite3_exec(db, COMMAND, callback, 0, &zErrMsg);
 
     if( rc!=SQLITE_OK ){
@@ -239,7 +273,7 @@ int QuickTest(LPCTSTR lpFilename, char* query)
     sqlite3 *db;
     DeleteFile(lpFilename);
 
-    sqlite3_compress(-1, -1);
+    sqlite3_compress(-1, -1, -1);
     int rc = sqlite3_open(lpFilename, &db);
 
     if (rc == SQLITE_OK)
