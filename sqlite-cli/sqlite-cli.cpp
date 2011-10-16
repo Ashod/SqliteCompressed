@@ -64,7 +64,6 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     return 0;
 }
 
-
 /*
     Statistics:
     Compression: level-6 zlib.
@@ -74,6 +73,7 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     Uncompressed file size: 50686 KB.
 
     Chunk Size, Run Time (ms), Compressed Size (KB), Compression Ratio (%)
+    No Compress, 13234, 50686, 100
     01 * 64 KB, 44906, 50686, 100
     02 * 64 KB, 52219, 47728, 94.16
     03 * 64 KB, 58547, 42272, 83.40
@@ -109,7 +109,9 @@ void CreateLargeDB(_TCHAR* dbFilename)
     srand(0);
 
     DeleteFile(dbFilename);
+    //sqlite3_compress(1, 9, 12*64*1024);
     sqlite3_compress(1, -1, -1);
+
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -124,7 +126,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     const int ROW_COUNT = 50;
     const int MAX_DATA_SIZE = 1000 * 1024;
-    const char* test_data[ROW_COUNT];
+    const char* test_data[ROW_COUNT * 2];
     memset(test_data, 0, sizeof(test_data));
     char* buffer = new char[(MAX_DATA_SIZE * 2) + 128];
     const char* const INSERT_COMMAND = "INSERT INTO t1 (data, num) values ('%s', %d);";
@@ -199,6 +201,27 @@ void CreateLargeDB(_TCHAR* dbFilename)
             break;
         }
     }
+
+    /*
+    const char* const UPSERT_COMMAND = "INSERT OR REPLACE INTO t1 (data, num) values ('%s', %d);";
+
+    rc = SQLITE_OK;
+    printf("\n>>>> Upserting\n");
+    for (int c = 0; (c < ROW_COUNT * 2) && (rc == SQLITE_OK); ++c)
+    {
+        int data_size = ((int)rand() * (int)rand()) % MAX_DATA_SIZE;
+        test_data[c] = GenerateText(data_size);
+        sprintf(buffer, UPSERT_COMMAND, test_data[c], c);
+        printf("%d) Upserting %d bytes...\n", c, data_size);
+        rc = sqlite3_exec(db, buffer, callback, 0, &zErrMsg);
+
+        if ((rc != SQLITE_OK) && (rc != SQLITE_ABORT))
+        {
+            fprintf(stderr, "Error: %s\n", zErrMsg);
+            break;
+        }
+    }
+    */
 
     printf("\nFinished in %dms\n", GetTickCount() - start);
 
