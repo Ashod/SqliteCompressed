@@ -85,7 +85,7 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     09 * 64 KB, 95047, 42240, 83.34
     10 * 64 KB, 96516, 41824, 82.52
     11 * 64 KB, 93016, 41472, 81.82
-    12 * 64 KB, 10492, 41184, 81.25
+    12 * 64 KB, 104920, 41184, 81.25
     13 * 64 KB, 106016, 41904, 82.67
     14 * 64 KB, 108469, 41632, 82.14
     15 * 64 KB, 110265, 41392, 81.66
@@ -109,8 +109,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     srand(0);
 
     DeleteFile(dbFilename);
-    //sqlite3_compress(1, 9, 12*64*1024);
-    sqlite3_compress(1, -1, -1);
+    sqlite3_compress(1, 6, -1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -324,24 +323,24 @@ int _tmain(int argc, _TCHAR* argv[])
     int nrow;
     int ncol;
 
-    CreateLargeDB("Z:\\test.db");
+    CreateLargeDB("test.db");
     return 0;
 
-    QuickTest("Z:\\test.db", 
+    QuickTest("C:\\test.db", 
         "CREATE TABLE abc(a PRIMARY KEY, b, c);\
         INSERT INTO abc VALUES(1, 2, 3);\
         INSERT INTO abc VALUES(2, 3, 4);\
         INSERT INTO abc SELECT a+2, b, c FROM abc;\
         SELECT * FROM abc;");
 
-    QuickTest("Z:\\test.db", 
+    QuickTest("C:\\test.db", 
         "CREATE TABLE abc(a PRIMARY KEY, b, c);\
         INSERT OR REPLACE INTO abc VALUES(1, 2, 3);\
         INSERT OR REPLACE INTO abc VALUES(1, 2, 4);\
         INSERT OR REPLACE INTO abc SELECT a+2, b, c FROM abc;\
         SELECT * FROM abc;");
 
-    //QueryWikideskDB("Z:\\wikidesk.db");
+    //QueryWikideskDB("C:\\wikidesk.db");
     return 0;
 
     if( argc!=3 ){
