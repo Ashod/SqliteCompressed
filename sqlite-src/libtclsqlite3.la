@@ -17,7 +17,7 @@ old_library='libtclsqlite3.a'
 inherited_linker_flags=''
 
 # Libraries that this one depends upon.
-dependency_libs=' /c/prj/Sqlite/sqlite-src/libsqlite3.la -lz -LC:/tools/Tcl/lib -ltclstub85 -lpthread'
+dependency_libs=' -L/c/prj/Sqlite/SqliteCompressed/sqlite-src /c/prj/Sqlite/SqliteCompressed/sqlite-src/libsqlite3.la -lz -LC:/tools/Tcl/lib -ltclstub85 -lpthread'
 
 # Names of additional weak libraries provided by this library
 weak_library_names=''
@@ -38,4 +38,4 @@ dlopen=''
 dlpreopen=''
 
 # Directory that this library needs to be installed in:
-libdir='c:/tools/Tcl/lib/tcl8.5/sqlite3'
+libdir='c:/Tools/Tcl/lib/tcl8.5/sqlite3'

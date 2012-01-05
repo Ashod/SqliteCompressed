@@ -108,7 +108,7 @@ TCLSH_CMD = tclsh
 
 # Where do we want to install the tcl plugin
 #
-TCLLIBDIR = c:/tools/Tcl/lib/tcl8.5/sqlite3
+TCLLIBDIR = c:/Tools/Tcl/lib/tcl8.5/sqlite3
 
 # The suffix used on shared libraries.  Ex:  ".dll", ".so", ".dylib"
 #
@@ -148,7 +148,7 @@ ALLOWRELEASE =
 
 # libtool compile/link/install
 LTCOMPILE = $(LIBTOOL) --mode=compile --tag=CC $(TCC) $(LTCOMPILE_EXTRAS)
-LTLINK = $(LIBTOOL) --mode=link $(TCC) $(LTCOMPILE_EXTRAS)  $(LTLINK_EXTRAS)
+LTLINK = $(LIBTOOL) --mode=link $(TCC) $(LTCOMPILE_EXTRAS) -L. $(LTLINK_EXTRAS)
 LTINSTALL = $(LIBTOOL) --mode=install $(INSTALL)
 
 # nawk compatible awk.

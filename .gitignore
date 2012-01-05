@@ -50,3 +50,6 @@ sqlite-src/http
 sqlite-src/test.bu
 sqlite-src/testdb
 sqlite-src/mydir
+*.db2
+*.db1
+*.db1-journal

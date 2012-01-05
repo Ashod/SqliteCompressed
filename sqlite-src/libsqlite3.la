@@ -17,7 +17,7 @@ old_library='libsqlite3.a'
 inherited_linker_flags=''
 
 # Libraries that this one depends upon.
-dependency_libs=' -lpthread -lz'
+dependency_libs=' -L/c/prj/Sqlite/SqliteCompressed/sqlite-src -lpthread -lz'
 
 # Names of additional weak libraries provided by this library
 weak_library_names=''
