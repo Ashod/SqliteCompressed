@@ -12,4 +12,5 @@ make distclean
 make clean
 make all
 make dll
-make compresstest
+#make compresstest
+make test
