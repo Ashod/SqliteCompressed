@@ -32,6 +32,7 @@ static int callback(void *NotUsed, int argc, char **argv, char **azColName)
 const char* GenerateText(int length)
 {
     static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`";
+    //static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-";
     const int ALPHA_COUNT = sizeof(alpha) - 1;
 
     char* text = new char[length + 1];
@@ -68,6 +69,7 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     Statistics:
     Compression: level-6 zlib.
     Data: 50 rows with random ascii of max size (1000 * 1024), updated to (2000 * 1024).
+	CACHE_SIZE_IN_CHUNKS: 25
     Alphabet: "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`".
     Seed: srand(0).
     Uncompressed file size: 50686 KB.
@@ -100,11 +102,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
 {
     sqlite3 *db;
     char *zErrMsg = 0;
-    int rc,i;
-
-    char **result;
-    int nrow;
-    int ncol;
+    int rc;
 
     srand(0);
 
@@ -266,11 +264,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
 {
     sqlite3 *db;
     char *zErrMsg = 0;
-    int rc,i;
-
-    char **result;
-    int nrow;
-    int ncol;
+    int rc;
 
     sqlite3_compress(1, 1, -1);
 
