@@ -86,7 +86,13 @@ typedef enum TraceLevel
     IoOps,
     Trace,
     Maximum
+
 } TraceLevel;
+
+/*
+** The default trace level.
+*/
+#define DEFAULT_TRACE_LEVEL		Registeration
 
 typedef struct vfsc_chunk vfsc_chunk;
 struct vfsc_chunk {
@@ -97,7 +103,6 @@ struct vfsc_chunk {
     char* pCompData;
     char state;
 };
-
 
 /*
 ** An instance of this structure is attached to the each trace VFS to
@@ -439,6 +444,9 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
 
         SetSparseRange(pFile->hFile, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
         pChunk->state = Cached;
+
+		vfsc_printf(pInfo, Trace, "> Sparse Range(%s, ofst=%lld, sz=%lld)\n",
+					pFile->zFName, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
     }
     else
     {
@@ -516,7 +524,7 @@ static void MtfCachedChunk(vfsc_info *pInfo, int index)
 /*
 ** Finds the chunk in cache or reads from disk.
 */
-static int GetCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
+static int GetCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk** pChunk)
 {
     int i;
     int index = -1;
@@ -557,7 +565,6 @@ static int GetCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk** pChunk)
     *pChunk = pInfo->pCache[index];
     return ReadCache(pFile, chunkOffset, pInfo->pCache[index]);
 }
-
 
 /*
 ** Close an vfsc-file.
@@ -920,8 +927,6 @@ static int vfscShmUnmap(sqlite3_file *pFile, int delFlag){
 */
 static HANDLE OpenSparseFile(const char *zName)
 {
-    // Use CreateFile as you would normally - Create file with whatever flags
-    //and File Share attributes that works for you
     DWORD dwTemp;
     DWORD res;
     void *zConverted;              /* Filename in OS encoding */
@@ -929,16 +934,17 @@ static HANDLE OpenSparseFile(const char *zName)
 
     /* Convert the filename to the system encoding. */
     zConverted = convertUtf8Filename(zName);
-    if( zConverted==0 ){
+    if (zConverted == NULL)
+	{
         return INVALID_HANDLE_VALUE;
     }
 
     hSparseFile = CreateFileW((WCHAR*)zConverted,
         GENERIC_READ|GENERIC_WRITE,
-        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+		FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
+        OPEN_EXISTING, // We expect the default VFS to have opened the file already.
+		FILE_ATTRIBUTE_NORMAL,
         NULL);
 
     if (hSparseFile == INVALID_HANDLE_VALUE)
@@ -1045,10 +1051,10 @@ static int vfscOpen(
   {
       // Now reopen the file and mark it sparse.
       p->hFile = OpenSparseFile(zName);
-      vfsc_printf(pInfo, OpenClose, "> %s.xOpen(%s) -> %x", pInfo->zVfsName, p->zFName, GetLastError());
       if (p->hFile != INVALID_HANDLE_VALUE)
       {
           int compressed = IsCompressed(p->hFile);
+	      vfsc_printf(pInfo, OpenClose, "> %s.xOpen(%s) -> %x", pInfo->zVfsName, p->zFName, GetLastError());
           vfsc_printf(pInfo, OpenClose, " -> %s\n", compressed ? "Compressed" : "Plain");
           if (!compressed)
           {
@@ -1056,6 +1062,11 @@ static int vfscOpen(
               p->hFile = INVALID_HANDLE_VALUE;
           }
       }
+
+      if (p->hFile == INVALID_HANDLE_VALUE)
+	  {
+			vfsc_printf(pInfo, OpenClose, "> %s.xOpen(%s) -> Failed to open/create sparse file! Last Error: 0x%x.\n", pInfo->zVfsName, p->zFName, GetLastError());
+	  }
   }
 
   return rc;
@@ -1303,7 +1314,7 @@ SQLITE_API int sqlite3_compress(
   pInfo->pOutArg = stderr;
   pInfo->zVfsName = pNew->zName;
   pInfo->pTraceVfs = pNew;
-  pInfo->trace = trace >= Maximum ? Maximum : (trace < None ? OpenClose : trace);
+  pInfo->trace = trace >= Maximum ? Maximum : (trace < None ? DEFAULT_TRACE_LEVEL : trace);
 
   memset(pInfo->pCache, 0, sizeof(pInfo->pCache));
   for (i = 0; i < CACHE_SIZE_IN_CHUNKS; ++i)
