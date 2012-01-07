@@ -57,7 +57,7 @@ extern void *convertUtf8Filename(const char *zFilename);
 
 /*
 ** The number of chunks to cache.
-** MUST be at least 2 slots.
+** MUST be at least 1 slot.
 ** Memory consumption is CACHE_SIZE_IN_CHUNKS * DEF_CHUNK_SIZE_BYTES * 2.
 */
 #define CACHE_SIZE_IN_CHUNKS        (25)
@@ -116,7 +116,8 @@ struct vfsc_info {
   void *pOutArg;                      /* First argument to xOut */
   const char *zVfsName;               /* Name of this trace-VFS */
   sqlite3_vfs *pTraceVfs;             /* Pointer back to the trace VFS */
-  vfsc_chunk* pCache[CACHE_SIZE_IN_CHUNKS];  /* The chunk cache. */
+  void* pCacheChunks;                 /* The cache chunks allocated in one block. */
+  vfsc_chunk* pCache[CACHE_SIZE_IN_CHUNKS + 1];  /* The chunk cache. */
   int trace;
 };
 
@@ -602,6 +603,10 @@ static int GetCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk** pCh
 
         // New target is the next-to-last.
         index = CACHE_SIZE_IN_CHUNKS - 2;
+		if (index < 0)
+		{
+			index = 0;
+		}
     }
 
     // Cache the target chunk.
@@ -624,12 +629,11 @@ static int vfscClose(sqlite3_file *pFile){
 	  FlushCache(p);
 	  for (i = 0; i < CACHE_SIZE_IN_CHUNKS; ++i)
 	  {
-		sqlite3_free((void*)pInfo->pCache[i]->pCompData);
 		sqlite3_free((void*)pInfo->pCache[i]->pOrigData);
-		sqlite3_free((void*)pInfo->pCache[i]);
 		pInfo->pCache[i] = NULL;
 	  }
 
+	  sqlite3_free(pInfo->pCacheChunks);
       CloseHandle(p->hFile);
       p->hFile = INVALID_HANDLE_VALUE;
   }
@@ -638,7 +642,7 @@ static int vfscClose(sqlite3_file *pFile){
   if ((p->flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB)
   {
     vfsc_printf(pInfo, Registeration, "Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks.\n", ChunkSizeBytes / 1024, CompressionLevel, CACHE_SIZE_IN_CHUNKS);
-    vfsc_printf(pInfo, Registeration, "Cache Hits: %d, Cache Misses: %d, Total: %d, Ratio: %.2f%%\n", CacheHits, TotalHits - CacheHits, TotalHits, 100.0 * CacheHits / (double)TotalHits);
+    vfsc_printf(pInfo, Registeration, "Cache Hits: %d, Cache Misses: %d, Total: %d, Ratio: %.3f%%\n", CacheHits, TotalHits - CacheHits, TotalHits, 100.0 * CacheHits / (double)TotalHits);
     vfsc_printf(pInfo, Registeration, "Compressed: %lld KBytes in %d Chunks, Decompressed: %lld KBytes in %d Chunks\n", CompressBytes / 1024, CompressCount, DecompressBytes / 1024, DecompressCount);
     vfsc_printf(pInfo, Registeration, "Wrote: %lld KBytes in %d Chunks, Read: %lld KBytes in %d Chunks\n", WriteBytes / 1024, WriteCount, ReadBytes / 1024, ReadCount);
   }
@@ -1385,26 +1389,28 @@ SQLITE_API int sqlite3_compress(
   pInfo->zVfsName = pNew->zName;
   pInfo->pTraceVfs = pNew;
   pInfo->trace = trace >= Maximum ? Maximum : (trace < None ? DEFAULT_TRACE_LEVEL : trace);
+ 
+  pInfo->pCacheChunks = sqlite3_malloc(CACHE_SIZE_IN_CHUNKS * sizeof(vfsc_chunk));
+  if(pInfo->pCacheChunks == NULL)
+  {
+    return SQLITE_NOMEM;
+  }
 
   memset(pInfo->pCache, 0, sizeof(pInfo->pCache));
   for (i = 0; i < CACHE_SIZE_IN_CHUNKS; ++i)
   {
-      pInfo->pCache[i] = (vfsc_chunk*)sqlite3_malloc(sizeof(vfsc_chunk));
-      if(pInfo->pCache[i] == NULL)
-      {
-         return SQLITE_NOMEM;
-      }
+      pInfo->pCache[i] = (vfsc_chunk*)((char*)pInfo->pCacheChunks + sizeof(vfsc_chunk) * i);
 
       memset(pInfo->pCache[i], 0, sizeof(vfsc_chunk));
       pInfo->pCache[i]->state = Empty;
       pInfo->pCache[i]->offset = -1;
       pInfo->pCache[i]->origSize = -1;
-      pInfo->pCache[i]->pCompData = (char*)sqlite3_malloc( ChunkSizeBytes );
-      pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc( ChunkSizeBytes );
+      pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc(ChunkSizeBytes * 2);
+      pInfo->pCache[i]->pCompData = pInfo->pCache[i]->pOrigData + ChunkSizeBytes;
   }
   
-  vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks.\n",
-      pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024, CompressionLevel, CACHE_SIZE_IN_CHUNKS);
+  vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks (using %d KBytes).\n",
+      pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024, CompressionLevel, CACHE_SIZE_IN_CHUNKS, 2 * ChunkSizeBytes / 1024 * CACHE_SIZE_IN_CHUNKS);
 
   return sqlite3_vfs_register(pNew, 1);
 }
