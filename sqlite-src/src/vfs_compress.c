@@ -45,6 +45,7 @@
 #endif
 
 extern void *convertUtf8Filename(const char *zFilename);
+extern WINBASEAPI BOOL WINAPI GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);
 
 /*
 ** The chunk size is the compression unit.
@@ -457,6 +458,31 @@ static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
     return GetLastError();
 }
 
+static void LogSparseFileSize(vfsc_file *pFile)
+{
+    LARGE_INTEGER liSparseFileSize;
+    LARGE_INTEGER liSparseFileCompressedSize;
+
+	if (pFile->hFile == INVALID_HANDLE_VALUE ||
+		pFile->pInfo->trace < Compression)
+	{
+		return;
+	}
+
+    GetFileSizeEx(pFile->hFile, &liSparseFileSize);
+
+    // Retrieves the file's actual size on disk, in bytes. The size does not
+    // include the sparse ranges.
+	liSparseFileCompressedSize.LowPart = GetCompressedFileSizeA(pFile->zFName,
+        (LPDWORD)&liSparseFileCompressedSize.HighPart);
+
+    // Print the result
+    vfsc_printf(pFile->pInfo, Compression, " > File total size: %lld KB, Actual size on disk: %lld KB, Compression Ratio: %.2f%%\n",
+		liSparseFileSize.QuadPart / 1024,
+        liSparseFileCompressedSize.QuadPart / 1024,
+        100.0 * liSparseFileCompressedSize.QuadPart / (double)liSparseFileSize.QuadPart);
+}
+
 static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
 {
     vfsc_info *pInfo = pFile->pInfo;
@@ -487,12 +513,14 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
 		SetSparseRange(pFile->hFile, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
         pChunk->state = Cached;
 
-		vfsc_printf(pInfo, Trace, "> Sparse Range(%s, ofst=%lld, sz=%lld)\n",
+		vfsc_printf(pInfo, Trace, "> Sparse Range(%s, ofst=%lld, sz=%d)\n",
 					pFile->zFName, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
+		FlushFileBuffers(pFile->hFile);
+		LogSparseFileSize(pFile);
     }
     else
     {
-        vfsc_printf(pInfo, Trace, "> SKIPPED Flush(%s,n=%d,ofst=%lld)\n",
+        vfsc_printf(pInfo, Trace, "> SKIPPED %s.Flush(%s,n=%d,ofst=%lld)\n",
             pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset);
     }
 
@@ -518,7 +546,7 @@ static int FlushCache(vfsc_file *pFile)
     return SQLITE_OK;
 }
 
-static int ReadCache(vfsc_file *pFile, int chunkOffset, vfsc_chunk* pChunk)
+static int ReadCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk* pChunk)
 {
     int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, ChunkSizeBytes, chunkOffset);
     if (rc == SQLITE_IOERR_READ || rc == SQLITE_FULL)
@@ -1417,8 +1445,8 @@ SQLITE_API int sqlite3_compress(
 
       memset(pInfo->pCache[i], 0, sizeof(vfsc_chunk));
       pInfo->pCache[i]->state = Empty;
-      pInfo->pCache[i]->offset = -1;
-      pInfo->pCache[i]->origSize = -1;
+      pInfo->pCache[i]->offset = 0;
+      pInfo->pCache[i]->origSize = 0;
       pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc(ChunkSizeBytes * 2);
       pInfo->pCache[i]->pCompData = pInfo->pCache[i]->pOrigData + ChunkSizeBytes;
   }
