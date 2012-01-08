@@ -12,7 +12,8 @@
 extern "C" int sqlite3_compress(
     int trace,                  /* See TraceLevel. 0 to disable. */
     int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
-    int chunkSizeBytes          /* The size of the compression chunk in bytes: -1 for default */
+    int chunkSizeBytes,         /* The size of the compression chunk in bytes: -1 for default */
+    int cacheSize               /* The number of chunks to cache: -1 for default. */
     );
 
 BOOL GetSparseFileSize(LPCTSTR lpFileName);
@@ -69,7 +70,7 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     Statistics:
     Compression: level-6 zlib.
     Data: 50 rows with random ascii of max size (1000 * 1024), updated to (2000 * 1024).
-	CACHE_SIZE_IN_CHUNKS: 25
+	CACHE_SIZE_IN_CHUNKS: ?
     Alphabet: "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`".
     Seed: srand(0).
     Uncompressed file size: 50686 KB.
@@ -107,7 +108,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     srand(0);
 
     DeleteFile(dbFilename);
-    sqlite3_compress(1, 6, -1);
+    sqlite3_compress(1, 6, -1, -1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -266,7 +267,7 @@ void QueryWikideskDB(_TCHAR* dbFilename)
     char *zErrMsg = 0;
     int rc;
 
-    sqlite3_compress(1, 1, -1);
+    sqlite3_compress(1, 1, -1, -1);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -289,7 +290,7 @@ int QuickTest(LPCTSTR lpFilename, char* query)
     sqlite3 *db;
     DeleteFile(lpFilename);
 
-    sqlite3_compress(-1, -1, -1);
+    sqlite3_compress(-1, -1, -1, -1);
     int rc = sqlite3_open(lpFilename, &db);
 
     if (rc == SQLITE_OK)

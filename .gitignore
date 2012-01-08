@@ -53,3 +53,5 @@ sqlite-src/mydir
 *.db2
 *.db1
 *.db1-journal
+*.db3
+*.db2-*

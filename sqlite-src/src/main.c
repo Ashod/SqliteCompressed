@@ -2293,10 +2293,10 @@ int sqlite3_open(
     extern int sqlite3_compress(
         int trace,
         int compressionLevel,
-        int chunkSizeBytes
+        int chunkSizeBytes,
+        int cacheSize
         );
-	//printf("sqlite3_compress\n");
-    sqlite3_compress(-1, -1, -1);
+    sqlite3_compress(-1, -1, -1, -1);
 #endif
 
   return openDatabase(zFilename, ppDb,
