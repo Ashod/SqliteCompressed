@@ -37,7 +37,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "zlib.h"
-#include <winbase.h>
+#include <Windows.h>
 #include <WinIoCtl.h>
 
 #ifdef __CYGWIN__
@@ -45,7 +45,6 @@
 #endif
 
 extern void *convertUtf8Filename(const char *zFilename);
-extern WINBASEAPI BOOL WINAPI GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);
 
 /*
 ** The chunk size is the compression unit.
@@ -206,6 +205,205 @@ static sqlite_int64 CompressBytes = 0;
 static sqlite_int64 DecompressBytes = 0;
 
 #endif // ENABLE_STATISTICS
+
+/*
+** Core Windows API Wrappers.
+*/
+
+extern WINBASEAPI BOOL WINAPI GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);
+
+/*
+** Checks whether or not a volume supports sparse files.
+*/
+static
+BOOL SparseFileSuppored(LPCSTR lpFilePath)
+{
+    DWORD dwFlags;
+	char lpVolRootPath[4];
+	lpVolRootPath[0] = lpFilePath[0];
+	lpVolRootPath[1] = lpFilePath[1];
+	lpVolRootPath[2] = lpFilePath[2];
+	lpVolRootPath[3] = 0;
+
+    GetVolumeInformationA(
+		lpVolRootPath, 
+        NULL, 
+        MAX_PATH, 
+        NULL, 
+        NULL,
+        &dwFlags, 
+        NULL, 
+        MAX_PATH);
+
+   return (dwFlags & FILE_SUPPORTS_SPARSE_FILES);
+}
+
+/*
+** Checks whether or not a file is in sparse mode.
+*/
+static
+BOOL IsSparse(HANDLE hFile)
+{
+    BY_HANDLE_FILE_INFORMATION bhfi;
+
+	if (hFile == INVALID_HANDLE_VALUE)
+    {
+		return FALSE;
+	}
+
+    // Get file information.
+	memset(&bhfi, 0, sizeof(bhfi));
+    GetFileInformationByHandle(hFile, &bhfi);
+    return (bhfi.dwFileAttributes & FILE_ATTRIBUTE_SPARSE_FILE);
+}
+
+/*
+** Checks whether or not a database file is compressed by us.
+*/
+static
+BOOL IsCompressed(HANDLE hFile)
+{
+    char buffer[100];
+    DWORD read = 0;
+    LONG upper = 0;
+
+    ReadFile(hFile, buffer, 14, &read, NULL);
+    SetFilePointer(hFile, 0, &upper, FILE_BEGIN);
+    if (read == 0)
+    {
+        // Empty file, just start supporting compression.
+        return 1;
+    }
+
+	//TODO: We must avoid relying on the header for this check.
+    buffer[read] = 0;
+    return (strcmp(buffer, "SQLite format ") != 0);
+}
+
+/*
+** Opens a file in sparse-mode.
+*/
+static
+HANDLE OpenSparseFile(const char *zName)
+{
+    DWORD dwTemp;
+    DWORD res;
+    void *zConverted;              /* Filename in OS encoding */
+    HANDLE hSparseFile;
+
+    /* Convert the filename to the system encoding. */
+    zConverted = convertUtf8Filename(zName);
+    if (zConverted == NULL)
+	{
+        return INVALID_HANDLE_VALUE;
+    }
+
+    hSparseFile = CreateFileW((WCHAR*)zConverted,
+        GENERIC_READ|GENERIC_WRITE,
+		FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING, // We expect the default VFS to have opened the file already.
+		FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    if (hSparseFile == INVALID_HANDLE_VALUE)
+    {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    SetLastError(0);
+    res = DeviceIoControl(hSparseFile,
+                            FSCTL_SET_SPARSE,
+                            NULL,
+                            0,
+                            NULL,
+                            0,
+                            &dwTemp,
+                            NULL);
+    if (res == 0)
+    {
+        CloseHandle(hSparseFile);
+        hSparseFile = INVALID_HANDLE_VALUE;
+    }
+
+    return hSparseFile;
+}
+
+/*
+** Marks a range of bytes as sparse.
+*/
+static
+DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
+{
+    typedef struct _FILE_ZERO_DATA_INFORMATION {
+
+        LARGE_INTEGER FileOffset;
+        LARGE_INTEGER BeyondFinalZero;
+
+    } FILE_ZERO_DATA_INFORMATION, *PFILE_ZERO_DATA_INFORMATION;
+
+    FILE_ZERO_DATA_INFORMATION fzdi;
+    DWORD dwTemp;
+    BOOL res;
+
+    if (size <= 0)
+    {
+        return 0;
+    }
+
+    // Specify the starting and the ending address (not the size) of the
+    // sparse zero block
+    fzdi.FileOffset.QuadPart = start;
+    fzdi.BeyondFinalZero.QuadPart = start + size;
+
+#define FSCTL_SET_ZERO_DATA             CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 50, METHOD_BUFFERED, FILE_WRITE_DATA) // FILE_ZERO_DATA_INFORMATION,
+
+    // Mark the range as sparse zero block
+    SetLastError(0);
+    res = DeviceIoControl(hSparseFile,
+        FSCTL_SET_ZERO_DATA,
+        &fzdi,
+        sizeof(fzdi),
+        NULL,
+        0,
+        &dwTemp,
+        NULL);
+
+    if (res)
+    {
+        return 0; // Success
+    }
+
+    // return the error value
+    return GetLastError();
+}
+
+/*
+** Gets the actual size (after decompression) and the compressed/physical
+** sizes of a given file.
+*/
+static
+LARGE_INTEGER GetSparseFileSize(HANDLE hFile, LPCSTR filename, PLARGE_INTEGER actualSize)
+{
+    LARGE_INTEGER liSparseFileCompressedSize;
+	liSparseFileCompressedSize.QuadPart = -1;
+
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		return liSparseFileCompressedSize;
+	}
+
+    if (GetFileSizeEx(hFile, actualSize) == FALSE)
+	{
+		return liSparseFileCompressedSize;
+	}
+
+    // Retrieves the file's actual size on disk, in bytes. The size does not
+    // include the sparse ranges.
+	liSparseFileCompressedSize.LowPart = GetCompressedFileSizeA(
+					filename, (LPDWORD)&liSparseFileCompressedSize.HighPart);
+	return liSparseFileCompressedSize;
+}
 
 /*
 ** Return a pointer to the tail of the pathname.  Examples:
@@ -413,52 +611,8 @@ static int Compress(const void* input, int input_length, void* output, int max_o
     return output_length;
 }
 
-static DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
-{
-    typedef struct _FILE_ZERO_DATA_INFORMATION {
-
-        LARGE_INTEGER FileOffset;
-        LARGE_INTEGER BeyondFinalZero;
-
-    } FILE_ZERO_DATA_INFORMATION, *PFILE_ZERO_DATA_INFORMATION;
-
-    FILE_ZERO_DATA_INFORMATION fzdi;
-    DWORD dwTemp;
-    BOOL res;
-
-    if (size <= 0)
-    {
-        return 0;
-    }
-
-    // Specify the starting and the ending address (not the size) of the
-    // sparse zero block
-    fzdi.FileOffset.QuadPart = start;
-    fzdi.BeyondFinalZero.QuadPart = start + size;
-
-#define FSCTL_SET_ZERO_DATA             CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 50, METHOD_BUFFERED, FILE_WRITE_DATA) // FILE_ZERO_DATA_INFORMATION,
-
-    // Mark the range as sparse zero block
-    SetLastError(0);
-    res = DeviceIoControl(hSparseFile,
-        FSCTL_SET_ZERO_DATA,
-        &fzdi,
-        sizeof(fzdi),
-        NULL,
-        0,
-        &dwTemp,
-        NULL);
-
-    if (res)
-    {
-        return 0; // Success
-    }
-
-    // return the error value
-    return GetLastError();
-}
-
-static void LogSparseFileSize(vfsc_file *pFile)
+static
+void LogSparseFileSize(vfsc_file *pFile)
 {
     LARGE_INTEGER liSparseFileSize;
     LARGE_INTEGER liSparseFileCompressedSize;
@@ -469,18 +623,91 @@ static void LogSparseFileSize(vfsc_file *pFile)
 		return;
 	}
 
-    GetFileSizeEx(pFile->hFile, &liSparseFileSize);
+	liSparseFileCompressedSize = GetSparseFileSize(pFile->hFile, pFile->zFName, &liSparseFileSize);
 
-    // Retrieves the file's actual size on disk, in bytes. The size does not
-    // include the sparse ranges.
-	liSparseFileCompressedSize.LowPart = GetCompressedFileSizeA(pFile->zFName,
-        (LPDWORD)&liSparseFileCompressedSize.HighPart);
-
-    // Print the result
+	// Print the result
     vfsc_printf(pFile->pInfo, Compression, " > File total size: %lld KB, Actual size on disk: %lld KB, Compression Ratio: %.2f%%\n",
 		liSparseFileSize.QuadPart / 1024,
         liSparseFileCompressedSize.QuadPart / 1024,
         100.0 * liSparseFileCompressedSize.QuadPart / (double)liSparseFileSize.QuadPart);
+}
+
+static
+BOOL LogSparseRanges(vfsc_file *pFile)
+{
+	typedef struct _FILE_ALLOCATED_RANGE_BUFFER {
+	  LARGE_INTEGER FileOffset;
+	  LARGE_INTEGER Length;
+	} FILE_ALLOCATED_RANGE_BUFFER, *PFILE_ALLOCATED_RANGE_BUFFER;
+
+    LARGE_INTEGER liFileSize;
+    FILE_ALLOCATED_RANGE_BUFFER queryRange;
+    FILE_ALLOCATED_RANGE_BUFFER allocRanges[1024];
+    DWORD nbytes;
+    BOOL bFinished;
+	DWORD dwAllocRangeCount;
+	DWORD i;
+
+	if (pFile->hFile == INVALID_HANDLE_VALUE ||
+		pFile->pInfo->trace < Trace)
+    {
+		return FALSE;
+	}
+
+    GetFileSizeEx(pFile->hFile, &liFileSize);
+
+    // Range to be examined (the whole file)
+    queryRange.FileOffset.QuadPart = 0;
+    queryRange.Length = liFileSize;
+
+	vfsc_printf(pFile->pInfo, Trace, " Allocated ranges in the file:\n");
+    do
+    {
+#define FSCTL_QUERY_ALLOCATED_RANGES    CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 51,  METHOD_NEITHER, FILE_READ_DATA)  // FILE_ALLOCATED_RANGE_BUFFER, FILE_ALLOCATED_RANGE_BUFFER
+
+        bFinished = DeviceIoControl(pFile->hFile, FSCTL_QUERY_ALLOCATED_RANGES, 
+            &queryRange, sizeof(queryRange), allocRanges, 
+            sizeof(allocRanges), &nbytes, NULL);
+
+        if (!bFinished)
+        {
+            DWORD dwError = GetLastError();
+
+            // ERROR_MORE_DATA is the only error that is normal
+            if (dwError != ERROR_MORE_DATA)
+            {
+                vfsc_printf(pFile->pInfo, Error, "DeviceIoControl failed w/err 0x%8lx\n", dwError);
+                return FALSE;
+            }
+        }
+
+        // Calculate the number of records returned
+        dwAllocRangeCount = nbytes / sizeof(FILE_ALLOCATED_RANGE_BUFFER);
+
+        // Print each allocated range
+        for (i = 0; i < dwAllocRangeCount; ++i)
+        {
+            vfsc_printf(pFile->pInfo, Trace, "  allocated range: [%lld]->[%lld] (%lld bytes)\n",
+					allocRanges[i].FileOffset.QuadPart,
+					allocRanges[i].FileOffset.QuadPart + allocRanges[i].Length.QuadPart,
+					allocRanges[i].Length.QuadPart);
+        }
+
+        // Set starting address and size for the next query
+        if (!bFinished && dwAllocRangeCount > 0)
+        {
+            queryRange.FileOffset.QuadPart = 
+                allocRanges[dwAllocRangeCount - 1].FileOffset.QuadPart + 
+                allocRanges[dwAllocRangeCount - 1].Length.QuadPart;
+            
+            queryRange.Length.QuadPart = liFileSize.QuadPart - 
+                queryRange.FileOffset.QuadPart;
+        }
+
+    }
+	while (!bFinished);
+
+    return TRUE;
 }
 
 static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
@@ -500,9 +727,9 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
         }
 
         // Write the chunk.
-        vfsc_printf(pInfo, Compression, "> %s.Flush(%s,n=%d,ofst=%lld)  Chunk=%lld, Data=%d bytes",
-            pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset, pChunk->offset, pChunk->compSize);
-        rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pChunk->pCompData, pChunk->compSize, pChunk->offset);
+        vfsc_printf(pInfo, Compression, "> %s.Flush(%s,n=%d,ofst=%lld)  Chunk=%lld",
+            pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset, pChunk->offset);
+        rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pChunk->pCompData, ChunkSizeBytes, pChunk->offset);
         vfsc_print_errcode(pInfo, Compression, " -> %s\n", rc);
 
 #ifdef ENABLE_STATISTICS
@@ -515,8 +742,11 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
 
 		vfsc_printf(pInfo, Trace, "> Sparse Range(%s, ofst=%lld, sz=%d)\n",
 					pFile->zFName, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
+		/*
 		FlushFileBuffers(pFile->hFile);
 		LogSparseFileSize(pFile);
+		LogSparseRanges(pFile);
+		*/
     }
     else
     {
@@ -674,7 +904,8 @@ static int vfscClose(sqlite3_file *pFile){
 	  }
 
 	  sqlite3_free(pInfo->pCacheChunks);
-      CloseHandle(p->hFile);
+	  FlushFileBuffers(p->hFile);
+	  CloseHandle(p->hFile);
       p->hFile = INVALID_HANDLE_VALUE;
   }
 
@@ -1036,75 +1267,6 @@ static int vfscShmUnmap(sqlite3_file *pFile, int delFlag){
 }
 
 /*
-** Opens a file in sparse-mode.
-*/
-static HANDLE OpenSparseFile(const char *zName)
-{
-    DWORD dwTemp;
-    DWORD res;
-    void *zConverted;              /* Filename in OS encoding */
-    HANDLE hSparseFile;
-
-    /* Convert the filename to the system encoding. */
-    zConverted = convertUtf8Filename(zName);
-    if (zConverted == NULL)
-	{
-        return INVALID_HANDLE_VALUE;
-    }
-
-    hSparseFile = CreateFileW((WCHAR*)zConverted,
-        GENERIC_READ|GENERIC_WRITE,
-		FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-        NULL,
-        OPEN_EXISTING, // We expect the default VFS to have opened the file already.
-		FILE_ATTRIBUTE_NORMAL,
-        NULL);
-
-    if (hSparseFile == INVALID_HANDLE_VALUE)
-    {
-        return INVALID_HANDLE_VALUE;
-    }
-
-    SetLastError(0);
-    res = DeviceIoControl(hSparseFile,
-                            FSCTL_SET_SPARSE,
-                            NULL,
-                            0,
-                            NULL,
-                            0,
-                            &dwTemp,
-                            NULL);
-    if (res == 0)
-    {
-        CloseHandle(hSparseFile);
-        hSparseFile = INVALID_HANDLE_VALUE;
-    }
-
-    return hSparseFile;
-}
-
-/*
-** Checks whether or not a database file is compressed by us.
-*/
-static int IsCompressed(HANDLE hFile)
-{
-    char buffer[100];
-    DWORD read = 0;
-    LONG upper = 0;
-
-    ReadFile(hFile, buffer, 14, &read, NULL);
-    SetFilePointer(hFile, 0, &upper, FILE_BEGIN);
-    if (read == 0)
-    {
-        // Empty file, just start supporting compression.
-        return 1;
-    }
-
-    buffer[read] = 0;
-    return (strcmp(buffer, "SQLite format ") != 0);
-}
-
-/*
 ** Open an vfsc file handle.
 */
 static int vfscOpen(
@@ -1161,7 +1323,8 @@ static int vfscOpen(
 
   p->flags = flags;
   if (rc == SQLITE_OK && CompressionLevel > 0 &&
-      ((flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB))
+      ((flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB) &&
+	  SparseFileSuppored(zName))
   {
       // Now reopen the file and mark it sparse.
       p->hFile = OpenSparseFile(zName);
