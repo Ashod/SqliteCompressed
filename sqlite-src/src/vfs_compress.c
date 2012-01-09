@@ -63,7 +63,7 @@ extern void *convertUtf8Filename(const char *zFilename);
 /*
 ** The default number of chunks to cache.
 */
-#define DEF_CACHE_SIZE				(20)
+#define DEF_CACHE_SIZE				(35)
 
 #define ENABLE_STATISTICS			1
 
@@ -106,7 +106,6 @@ struct vfsc_chunk {
     int origSize;
     int compSize;
     char* pOrigData;
-    char* pCompData;
     char state;
 };
 
@@ -122,7 +121,8 @@ struct vfsc_info {
   const char *zVfsName;               /* Name of this trace-VFS */
   sqlite3_vfs *pTraceVfs;             /* Pointer back to the trace VFS */
   void* pCacheChunks;                 /* The cache chunks allocated in one block. */
-  vfsc_chunk* pCache[MAX_CACHE_SIZE];  /* The chunk cache. */
+  vfsc_chunk* pCache[MAX_CACHE_SIZE]; /* The chunk cache. */
+  char* pCompData;                    /* Compressed data temporary area. */	
   int trace;
 };
 
@@ -721,7 +721,7 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
         if (pChunk->state == Uncompressed)
         {
             // Compress...
-            pChunk->compSize = Compress(pChunk->pOrigData, pChunk->origSize, pChunk->pCompData, ChunkSizeBytes);
+            pChunk->compSize = Compress(pChunk->pOrigData, pChunk->origSize, pInfo->pCompData, ChunkSizeBytes);
 			pChunk->state = Unwritten;
             vfsc_printf(pInfo, Compression, "Compressed %d into %d bytes from offset %lld.\n", pChunk->origSize, pChunk->compSize, pChunk->offset);
         }
@@ -729,7 +729,7 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
         // Write the chunk.
         vfsc_printf(pInfo, Compression, "> %s.Flush(%s,n=%d,ofst=%lld)  Chunk=%lld",
             pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset, pChunk->offset);
-        rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pChunk->pCompData, ChunkSizeBytes, pChunk->offset);
+        rc = pFile->pReal->pMethods->xWrite(pFile->pReal, pInfo->pCompData, ChunkSizeBytes, pChunk->offset);
         vfsc_print_errcode(pInfo, Compression, " -> %s\n", rc);
 
 #ifdef ENABLE_STATISTICS
@@ -778,7 +778,7 @@ static int FlushCache(vfsc_file *pFile)
 
 static int ReadCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk* pChunk)
 {
-    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pChunk->pCompData, ChunkSizeBytes, chunkOffset);
+    int rc = pFile->pReal->pMethods->xRead(pFile->pReal, pFile->pInfo->pCompData, ChunkSizeBytes, chunkOffset);
     if (rc == SQLITE_IOERR_READ || rc == SQLITE_FULL)
     {
         return rc;
@@ -789,7 +789,7 @@ static int ReadCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk* pCh
 	ReadBytes += ChunkSizeBytes;
 #endif
 
-    if (pChunk->pCompData[0] == 0)
+    if (pFile->pInfo->pCompData[0] == 0)
     {
         // The first byte should contain the length, hence can't be zero for compressed streams.
         pChunk->compSize = 0;
@@ -800,7 +800,7 @@ static int ReadCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk* pCh
     else
     {
         pChunk->compSize = ChunkSizeBytes; //TODO: Check if we read less.
-        pChunk->origSize = Decompress(pChunk->pCompData, &pChunk->compSize, pChunk->pOrigData, ChunkSizeBytes);
+        pChunk->origSize = Decompress(pFile->pInfo->pCompData, &pChunk->compSize, pChunk->pOrigData, ChunkSizeBytes);
         pChunk->state = Cached;
         vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
@@ -897,6 +897,7 @@ static int vfscClose(sqlite3_file *pFile){
   if (p->hFile != INVALID_HANDLE_VALUE)
   {
 	  FlushCache(p);
+	  FlushFileBuffers(p->hFile);
 	  for (i = 0; i < CacheSize; ++i)
 	  {
 		sqlite3_free((void*)pInfo->pCache[i]->pOrigData);
@@ -904,22 +905,30 @@ static int vfscClose(sqlite3_file *pFile){
 	  }
 
 	  sqlite3_free(pInfo->pCacheChunks);
-	  FlushFileBuffers(p->hFile);
-	  CloseHandle(p->hFile);
-      p->hFile = INVALID_HANDLE_VALUE;
   }
 
 #ifdef ENABLE_STATISTICS
   if ((p->flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB)
   {
+    LARGE_INTEGER liSparseFileSize;
+    LARGE_INTEGER liSparseFileCompressedSize =
+			GetSparseFileSize(p->hFile, p->zFName, &liSparseFileSize);
+
     vfsc_printf(pInfo, Registeration, "Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks.\n", ChunkSizeBytes / 1024, CompressionLevel, CacheSize);
     vfsc_printf(pInfo, Registeration, "Cache Hits: %d, Cache Misses: %d, Total: %d, Ratio: %.3f%%\n", CacheHits, TotalHits - CacheHits, TotalHits, 100.0 * CacheHits / (double)TotalHits);
     vfsc_printf(pInfo, Registeration, "Compressed: %lld KBytes in %d Chunks, Decompressed: %lld KBytes in %d Chunks\n", CompressBytes / 1024, CompressCount, DecompressBytes / 1024, DecompressCount);
     vfsc_printf(pInfo, Registeration, "Wrote: %lld KBytes in %d Chunks, Read: %lld KBytes in %d Chunks\n", WriteBytes / 1024, WriteCount, ReadBytes / 1024, ReadCount);
+    vfsc_printf(pInfo, Registeration, "File total size: %lld KB (%lld chunks), Actual size on disk: %lld KB, Compression Ratio: %.2f%%\n",
+		liSparseFileSize.QuadPart / 1024,
+		liSparseFileSize.QuadPart / ChunkSizeBytes,
+        liSparseFileCompressedSize.QuadPart / 1024,
+        100.0 * liSparseFileCompressedSize.QuadPart / (double)liSparseFileSize.QuadPart);
   }
 #endif
 
   vfsc_printf(pInfo, OpenClose, "%s.xClose(%s)", pInfo->zVfsName, p->zFName);
+  CloseHandle(p->hFile);
+  p->hFile = INVALID_HANDLE_VALUE;
   rc = p->pReal->pMethods->xClose(p->pReal);
   vfsc_print_errcode(pInfo, OpenClose, " -> %s\n", rc);
   if( rc==SQLITE_OK ){
@@ -1601,6 +1610,12 @@ SQLITE_API int sqlite3_compress(
     return SQLITE_NOMEM;
   }
 
+  pInfo->pCompData = (char*)sqlite3_malloc(ChunkSizeBytes);
+  if(pInfo->pCompData == NULL)
+  {
+    return SQLITE_NOMEM;
+  }
+
   memset(pInfo->pCache, 0, sizeof(pInfo->pCache));
   for (i = 0; i < CacheSize; ++i)
   {
@@ -1610,12 +1625,11 @@ SQLITE_API int sqlite3_compress(
       pInfo->pCache[i]->state = Empty;
       pInfo->pCache[i]->offset = 0;
       pInfo->pCache[i]->origSize = 0;
-      pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc(ChunkSizeBytes * 2);
-      pInfo->pCache[i]->pCompData = pInfo->pCache[i]->pOrigData + ChunkSizeBytes;
+      pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc(ChunkSizeBytes);
   }
   
   vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks (using %d KBytes).\n",
-      pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024, CompressionLevel, CacheSize, 2 * ChunkSizeBytes / 1024 * CacheSize);
+      pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024, CompressionLevel, CacheSize, ChunkSizeBytes / 1024 * CacheSize);
 
   return sqlite3_vfs_register(pNew, 1);
 }
