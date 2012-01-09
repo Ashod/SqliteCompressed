@@ -122,7 +122,10 @@ struct vfsc_info {
   sqlite3_vfs *pTraceVfs;             /* Pointer back to the trace VFS */
   void* pCacheChunks;                 /* The cache chunks allocated in one block. */
   vfsc_chunk* pCache[MAX_CACHE_SIZE]; /* The chunk cache. */
-  char* pCompData;                    /* Compressed data temporary area. */	
+  char* pCompData;                    /* Compressed data temporary area. */
+  int compDataSize;                   /* Compressed data temporary area size. */
+  z_stream strmDeflate;			      /* Zlib Compression stream. */
+  z_stream strmInflate;			      /* Zlib Decompression stream. */
   int trace;
 };
 
@@ -385,23 +388,37 @@ DWORD SetSparseRange(HANDLE hSparseFile, LONGLONG start, LONGLONG size)
 static
 LARGE_INTEGER GetSparseFileSize(HANDLE hFile, LPCSTR filename, PLARGE_INTEGER actualSize)
 {
-    LARGE_INTEGER liSparseFileCompressedSize;
-	liSparseFileCompressedSize.QuadPart = -1;
-
-	if (hFile == INVALID_HANDLE_VALUE)
-	{
-		return liSparseFileCompressedSize;
-	}
-
-    if (GetFileSizeEx(hFile, actualSize) == FALSE)
-	{
-		return liSparseFileCompressedSize;
-	}
-
     // Retrieves the file's actual size on disk, in bytes. The size does not
     // include the sparse ranges.
+    LARGE_INTEGER liSparseFileCompressedSize;
 	liSparseFileCompressedSize.LowPart = GetCompressedFileSizeA(
 					filename, (LPDWORD)&liSparseFileCompressedSize.HighPart);
+
+	if (hFile != INVALID_HANDLE_VALUE)
+	{
+		if (GetFileSizeEx(hFile, actualSize) == FALSE)
+		{
+			*actualSize = liSparseFileCompressedSize;
+		}
+	}
+	else
+	{
+		hFile = CreateFileA(filename,
+							GENERIC_READ,
+							FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+							NULL,
+							OPEN_EXISTING,
+							FILE_ATTRIBUTE_NORMAL,
+							NULL);
+
+		if (GetFileSizeEx(hFile, actualSize) == FALSE)
+		{
+			*actualSize = liSparseFileCompressedSize;
+		}
+
+		CloseHandle(hFile);
+	}
+
 	return liSparseFileCompressedSize;
 }
 
@@ -527,19 +544,12 @@ static void strappend(char *z, int *pI, const char *zAppend){
 ** Decompression interface.
 ** Returns the output size in bytes.
 */
-static int Decompress(const void* input, int* input_length, void* output, int max_output_length)
+static int Decompress(z_stream strm, const void* input, int* input_length, void* output, int max_output_length)
 {
     int ret;
     unsigned output_length;
-    z_stream strm;
-    
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    strm.avail_in = 0;
-    strm.next_in = Z_NULL;
-    ret = inflateInit(&strm);
-    if (ret != Z_OK)
+
+    if (inflateReset(&strm) != Z_OK)
     {
         return -1;
     }
@@ -548,11 +558,10 @@ static int Decompress(const void* input, int* input_length, void* output, int ma
     strm.next_in = (Bytef*)input;
     strm.avail_out = max_output_length;
     strm.next_out = (Bytef*)output;
-    ret = inflate(&strm, Z_NO_FLUSH);
+	ret = inflate(&strm, Z_FULL_FLUSH);
 
     *input_length = strm.total_in;
     output_length = max_output_length - strm.avail_out;
-    (void)inflateEnd(&strm);
 
 #ifdef ENABLE_STATISTICS
 	++DecompressCount;
@@ -566,47 +575,33 @@ static int Decompress(const void* input, int* input_length, void* output, int ma
 ** Compression interface.
 ** Returns the output size in bytes.
 */
-static int Compress(const void* input, int input_length, void* output, int max_output_length)
+static int Compress(z_stream strm, const void* input, int input_length, void* output, int max_output_length)
 {
     int ret;
     int output_length;
-    z_stream strm;
 
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    ret = deflateInit(&strm, CompressionLevel);
-    if (ret != Z_OK)
-    {
-        return -1;
-    }
+	ret = deflateReset(&strm);
+	if (ret != Z_OK)
+	{
+		return -1;
+	}
 
-    strm.avail_in = input_length;
+	strm.avail_in = input_length;
     strm.next_in = (Bytef*)input;
     strm.avail_out = max_output_length;
     strm.next_out = (Bytef*)output;
-    ret = deflate(&strm, Z_FINISH);    /* no bad return value */
+    ret = deflate(&strm, Z_FINISH);
+	if (ret != Z_STREAM_END)
+	{
+		printf("Shooot");
+	}
 
     output_length = max_output_length - strm.avail_out;
-    (void)deflateEnd(&strm);
 
 #ifdef ENABLE_STATISTICS
 	++CompressCount;
 	CompressBytes += input_length;
 #endif
-
-#if 0
-    {
-        char dout[ChunkSizeBytes];
-        int size = ChunkSizeBytes;
-        int dec = Decompress(output, &size, dout, ChunkSizeBytes);
-        if (dec != input_length || memcmp(dout, input, input_length) != 0)
-        {
-            printf("ERROR: Decompression failure!\n");
-            exit(1);
-        }
-    }
-#endif // _DEBUG
 
     return output_length;
 }
@@ -721,7 +716,7 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
         if (pChunk->state == Uncompressed)
         {
             // Compress...
-            pChunk->compSize = Compress(pChunk->pOrigData, pChunk->origSize, pInfo->pCompData, ChunkSizeBytes);
+            pChunk->compSize = Compress(pInfo->strmDeflate, pChunk->pOrigData, pChunk->origSize, pInfo->pCompData, pInfo->compDataSize);
 			pChunk->state = Unwritten;
             vfsc_printf(pInfo, Compression, "Compressed %d into %d bytes from offset %lld.\n", pChunk->origSize, pChunk->compSize, pChunk->offset);
         }
@@ -800,7 +795,7 @@ static int ReadCache(vfsc_file *pFile, sqlite_int64 chunkOffset, vfsc_chunk* pCh
     else
     {
         pChunk->compSize = ChunkSizeBytes; //TODO: Check if we read less.
-        pChunk->origSize = Decompress(pFile->pInfo->pCompData, &pChunk->compSize, pChunk->pOrigData, ChunkSizeBytes);
+		pChunk->origSize = Decompress(pFile->pInfo->strmInflate, pFile->pInfo->pCompData, &pChunk->compSize, pChunk->pOrigData, ChunkSizeBytes);
         pChunk->state = Cached;
         vfsc_printf(pFile->pInfo, Compression, "> Decompressed %d bytes from offset %d.\n", pChunk->origSize, chunkOffset);
     }
@@ -905,6 +900,13 @@ static int vfscClose(sqlite3_file *pFile){
 	  }
 
 	  sqlite3_free(pInfo->pCacheChunks);
+  }
+  
+  if (CompressionLevel != 0 &&
+	  (p->flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB)
+  {
+	(void)deflateEnd(&pInfo->strmDeflate);
+	(void)inflateEnd(&pInfo->strmInflate);
   }
 
 #ifdef ENABLE_STATISTICS
@@ -1331,7 +1333,7 @@ static int vfscOpen(
   }
 
   p->flags = flags;
-  if (rc == SQLITE_OK && CompressionLevel > 0 &&
+  if (rc == SQLITE_OK && CompressionLevel != 0 &&
       ((flags & 0xFFFFFF00) == SQLITE_OPEN_MAIN_DB) &&
 	  SparseFileSuppored(zName))
   {
@@ -1553,9 +1555,13 @@ SQLITE_API int sqlite3_compress(
 
   int chunkSize = chunkSizeBytes / COMPRESION_UNIT_SIZE_BYTES;
   ChunkSizeBytes = chunkSize <= 0 ? DEF_CHUNK_SIZE_BYTES : (chunkSize * COMPRESION_UNIT_SIZE_BYTES);
-
-  CompressionLevel = compressionLevel;
   CacheSize = cacheSize <= 0 ? DEF_CACHE_SIZE : (cacheSize >= MAX_CACHE_SIZE ? MAX_CACHE_SIZE : cacheSize);
+  CompressionLevel = compressionLevel;
+  if (CompressionLevel == 0)
+  {
+	  ChunkSizeBytes = 0;
+	  CacheSize = 0;
+  }
 
   // Find the windows VFS.
   pRoot = sqlite3_vfs_find("win32");
@@ -1610,12 +1616,6 @@ SQLITE_API int sqlite3_compress(
     return SQLITE_NOMEM;
   }
 
-  pInfo->pCompData = (char*)sqlite3_malloc(ChunkSizeBytes);
-  if(pInfo->pCompData == NULL)
-  {
-    return SQLITE_NOMEM;
-  }
-
   memset(pInfo->pCache, 0, sizeof(pInfo->pCache));
   for (i = 0; i < CacheSize; ++i)
   {
@@ -1626,6 +1626,34 @@ SQLITE_API int sqlite3_compress(
       pInfo->pCache[i]->offset = 0;
       pInfo->pCache[i]->origSize = 0;
       pInfo->pCache[i]->pOrigData = (char*)sqlite3_malloc(ChunkSizeBytes);
+  }
+  
+  if (CompressionLevel != 0)
+  {
+	  pInfo->strmDeflate.zalloc = Z_NULL;
+	  pInfo->strmDeflate.zfree = Z_NULL;
+	  pInfo->strmDeflate.opaque = Z_NULL;
+	  if (deflateInit(&pInfo->strmDeflate, CompressionLevel) != Z_OK)
+	  {
+		  return SQLITE_NOMEM;
+	  }
+
+	  pInfo->compDataSize = deflateBound(&pInfo->strmDeflate, ChunkSizeBytes);
+	  pInfo->pCompData = (char*)sqlite3_malloc(pInfo->compDataSize);
+	  if(pInfo->pCompData == NULL)
+	  {
+		return SQLITE_NOMEM;
+	  }
+
+	  pInfo->strmInflate.zalloc = Z_NULL;
+	  pInfo->strmInflate.zfree = Z_NULL;
+	  pInfo->strmInflate.opaque = Z_NULL;
+	  pInfo->strmInflate.avail_in = 0;
+	  pInfo->strmInflate.next_in = Z_NULL;
+	  if (inflateInit(&pInfo->strmInflate) != Z_OK)
+	  {
+		  return SQLITE_NOMEM;
+	  }
   }
   
   vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks (using %d KBytes).\n",
