@@ -1633,7 +1633,7 @@ SQLITE_API int sqlite3_compress(
 	  pInfo->strmDeflate.zalloc = Z_NULL;
 	  pInfo->strmDeflate.zfree = Z_NULL;
 	  pInfo->strmDeflate.opaque = Z_NULL;
-	  if (deflateInit(&pInfo->strmDeflate, CompressionLevel) != Z_OK)
+	  if (deflateInit2(&pInfo->strmDeflate, CompressionLevel, Z_DEFLATED, MAX_WBITS, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY) != Z_OK)
 	  {
 		  return SQLITE_NOMEM;
 	  }
@@ -1650,7 +1650,7 @@ SQLITE_API int sqlite3_compress(
 	  pInfo->strmInflate.opaque = Z_NULL;
 	  pInfo->strmInflate.avail_in = 0;
 	  pInfo->strmInflate.next_in = Z_NULL;
-	  if (inflateInit(&pInfo->strmInflate) != Z_OK)
+	  if (inflateInit2(&pInfo->strmInflate, MAX_WBITS) != Z_OK)
 	  {
 		  return SQLITE_NOMEM;
 	  }
