@@ -6665,8 +6665,8 @@ SQLITE_API int sqlite3_vtab_on_conflict(sqlite3 *);
 SQLITE_API int sqlite3_compress(
     int trace,                  /* See TraceLevel. 0 to disable. */
     int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
-    int chunkSizeBytes,         /* The size of the compression chunk in bytes: -1 for default */
-    int cacheSize               /* The number of chunks to cache: -1 for default. */
+	int chunkSizeKBytes,        /* The size of the compression chunk in KBytes: -1 for default */
+	int cacheSizeKBytes         /* The size of the cache in KBytes: -1 for default. */
 );
 
 /*

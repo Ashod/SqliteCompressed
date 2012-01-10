@@ -2291,10 +2291,10 @@ int sqlite3_open(
 ){
 #if SQLITE_TEST || VFS_COMPRESS_ENABLE
     extern int sqlite3_compress(
-        int trace,
-        int compressionLevel,
-        int chunkSizeBytes,
-        int cacheSize
+		   int trace,                  /* See TraceLevel. 0 to disable. */
+		   int compressionLevel,       /* The compression level: -1 for default, 0 to disable, 1 fastest, 9 best */
+		   int chunkSizeKBytes,        /* The size of the compression chunk in KBytes: -1 for default */
+		   int cacheSizeKBytes         /* The size of the cache in KBytes: -1 for default. */
         );
     sqlite3_compress(-1, -1, -1, -1);
 #endif

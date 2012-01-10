@@ -21,8 +21,8 @@
 **   int sqlite3_compress(
 **       int trace,                  // True to trace operations to stderr
 **       int compressionLevel,       // The compression level: -1 for default, 1 fastest, 9 best
-**       int chunkSizeBytes,         // The size of the compression chunk in bytes: -1 for default
-**       int cacheSize               // The number of chunks to cache: -1 for default.
+**		 int chunkSizeKBytes,        // The size of the compression chunk in KBytes: -1 for default
+**		 int cacheSizeKBytes         // The size of the cache in KBytes: -1 for default.
 **   );
 **
 ** BUILD:
@@ -61,9 +61,14 @@ extern void *convertUtf8Filename(const char *zFilename);
 #define MAX_CACHE_SIZE				(5000)
 
 /*
-** The default number of chunks to cache.
+** The minimum number of chunks to cache.
 */
-#define DEF_CACHE_SIZE				(35)
+#define MIN_CACHE_SIZE				(2)
+
+/*
+** The default cache size in KBytes.
+*/
+#define DEF_CACHE_KBYTES			(10 * 1024)
 
 #define ENABLE_STATISTICS			1
 
@@ -189,7 +194,7 @@ static int ChunkSizeBytes = DEF_CHUNK_SIZE_BYTES;
 ** The number of chunks to cache.
 ** MUST be at least 1 slot.
 */
-static int CacheSize = DEF_CACHE_SIZE;
+static int CacheSize = MIN_CACHE_SIZE;
 
 
 #ifdef ENABLE_STATISTICS
@@ -737,16 +742,16 @@ static int FlushChunk(vfsc_file *pFile, vfsc_chunk *pChunk)
 
 		vfsc_printf(pInfo, Trace, "> Sparse Range(%s, ofst=%lld, sz=%d)\n",
 					pFile->zFName, pChunk->offset + pChunk->compSize, ChunkSizeBytes - pChunk->compSize);
-		/*
+
 		FlushFileBuffers(pFile->hFile);
 		LogSparseFileSize(pFile);
 		LogSparseRanges(pFile);
-		*/
+
     }
     else
     {
-        vfsc_printf(pInfo, Trace, "> SKIPPED %s.Flush(%s,n=%d,ofst=%lld)\n",
-            pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset);
+        //vfsc_printf(pInfo, Trace, "> SKIPPED %s.Flush(%s,n=%d,ofst=%lld)\n",
+            //pInfo->zVfsName, pFile->zFName, pChunk->compSize, pChunk->offset);
     }
 
     return rc;
@@ -1018,7 +1023,7 @@ static int vfscWrite(
       }
 
       vfsc_printf(pInfo, IoOps, "> %s.xWrite(%s,n=%d,ofst=%lld)  Chunk=%lld, Data=%d bytes",
-          pInfo->zVfsName, p->zFName, iAmt, iOfst, chunkOffset, pChunk->compSize);
+          pInfo->zVfsName, p->zFName, iAmt, iOfst, chunkOffset, pChunk->origSize);
       vfsc_print_errcode(pInfo, IoOps, " -> %s\n", rc);
   }
   else
@@ -1543,8 +1548,8 @@ static const char *vfscNextSystemCall(sqlite3_vfs *pVfs, const char *zName){
 SQLITE_API int sqlite3_compress(
    int trace,                  /* See TraceLevel. 0 to disable. */
    int compressionLevel,       /* The compression level: -1 for default, 0 to disable, 1 fastest, 9 best */
-   int chunkSizeBytes,         /* The size of the compression chunk in bytes: -1 for default */
-   int cacheSize               /* The number of chunks to cache: -1 for default. */
+   int chunkSizeKBytes,        /* The size of the compression chunk in KBytes: -1 for default */
+   int cacheSizeKBytes         /* The size of the cache in KBytes: -1 for default. */
 ){
   sqlite3_vfs *pNew;
   sqlite3_vfs *pRoot;
@@ -1553,9 +1558,13 @@ SQLITE_API int sqlite3_compress(
   int nByte;
   int i;
 
-  int chunkSize = chunkSizeBytes / COMPRESION_UNIT_SIZE_BYTES;
+  int chunkSize = chunkSizeKBytes * 1024 / COMPRESION_UNIT_SIZE_BYTES;
   ChunkSizeBytes = chunkSize <= 0 ? DEF_CHUNK_SIZE_BYTES : (chunkSize * COMPRESION_UNIT_SIZE_BYTES);
-  CacheSize = cacheSize <= 0 ? DEF_CACHE_SIZE : (cacheSize >= MAX_CACHE_SIZE ? MAX_CACHE_SIZE : cacheSize);
+  CacheSize = cacheSizeKBytes <= 0
+				? 1 + (DEF_CACHE_KBYTES * 1024 / ChunkSizeBytes)
+				: 1 + (cacheSizeKBytes * 1024 / ChunkSizeBytes);
+  CacheSize = min(max(CacheSize, MIN_CACHE_SIZE), MAX_CACHE_SIZE);
+
   CompressionLevel = compressionLevel;
   if (CompressionLevel == 0)
   {
@@ -1656,6 +1665,23 @@ SQLITE_API int sqlite3_compress(
 	  }
   }
   
+#ifdef ENABLE_STATISTICS
+
+	CacheHits = 0;
+	TotalHits = 0;
+
+	WriteCount = 0;
+	ReadCount = 0;
+	WriteBytes = 0;
+	ReadBytes = 0;
+
+	CompressCount = 0;
+	DecompressCount = 0;
+	CompressBytes = 0;
+	DecompressBytes = 0;
+
+#endif // ENABLE_STATISTICS
+
   vfsc_printf(pInfo, Registeration, "%s.enabled_for(\"%s\") - Compression Chunk Size: %d KBytes, Level: %d, Cache: %d Chunks (using %d KBytes).\n",
       pInfo->zVfsName, pRoot->zName, ChunkSizeBytes / 1024, CompressionLevel, CacheSize, ChunkSizeBytes / 1024 * CacheSize);
 
@@ -1667,8 +1693,8 @@ SQLITE_API int sqlite3_compress(
 SQLITE_API int sqlite3_compress(
    int trace,                  /* See TraceLevel. 0 to disable. */
    int compressionLevel,       /* The compression level: -1 for default, 1 fastest, 9 best */
-   int chunkSizeBytes,         /* The size of the compression chunk in bytes: -1 for default */
-   int cacheSize               /* The number of chunks to cache: -1 for default. */
+   int chunkSizeKBytes,        /* The size of the compression chunk in KBytes: -1 for default */
+   int cacheSizeKBytes         /* The size of the cache in KBytes: -1 for default. */
 ){
   return SQLITE_OK;
 }
