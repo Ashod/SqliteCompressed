@@ -32,8 +32,8 @@ static int callback(void *NotUsed, int argc, char **argv, char **azColName)
 
 const char* GenerateText(int length)
 {
-    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`";
-    //static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-";
+    //static const char alpha[] = "abcdefghijklmnopqrstuvwxyz 123456789,.!?+-ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_[];/`";
+    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz";
     const int ALPHA_COUNT = sizeof(alpha) - 1;
 
     char* text = new char[length + 1];
@@ -99,7 +99,7 @@ static int callback_check(void *expected_value, int argc, char **argv, char **az
     20 * 64 KB, 120328, 41184, 81.25
 */
 
-void CreateLargeDB(_TCHAR* dbFilename)
+void CreateLargeDB(_TCHAR* dbFilename, int compressionLevel, int chunkSizeKBytes, int cacheSizeKBytes)
 {
     sqlite3 *db;
     char *zErrMsg = 0;
@@ -108,7 +108,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
     srand(0);
 
     DeleteFile(dbFilename);
-    sqlite3_compress(1, 6, -1, -1);
+    sqlite3_compress(1, compressionLevel, chunkSizeKBytes, cacheSizeKBytes);
 
     rc = sqlite3_open(dbFilename, &db);
     if( rc ){
@@ -122,7 +122,7 @@ void CreateLargeDB(_TCHAR* dbFilename)
 
     DWORD start = GetTickCount();
 
-    const int ROW_COUNT = 50;
+    const int ROW_COUNT = 60;
     const int MAX_DATA_SIZE = 1000 * 1024;
     const char* test_data[ROW_COUNT * 2];
     memset(test_data, 0, sizeof(test_data));
@@ -221,11 +221,9 @@ void CreateLargeDB(_TCHAR* dbFilename)
     }
     */
 
-    printf("\nFinished in %dms\n", GetTickCount() - start);
+    fprintf(stderr, "\nFinished in %dms\n", GetTickCount() - start);
 
     sqlite3_close(db);
-
-    GetSparseFileSize(dbFilename);
 }
 
 BOOL GetSparseFileSize(LPCTSTR lpFileName)
@@ -318,7 +316,17 @@ int _tmain(int argc, _TCHAR* argv[])
     int nrow;
     int ncol;
 
-    CreateLargeDB("test.db");
+	CreateLargeDB("test256.db", -1, -1, -1);
+
+	for (i = 0; i < 51; ++i)
+	{
+		fprintf(stderr, "\n\n");
+	    CreateLargeDB("test.db", 1, (i + 2) * 64, 30 * 1024);
+		fprintf(stderr, "\n");
+		CreateLargeDB("test.db", 9, (i + 2) * 64, 30 * 1024);
+		//break;
+	}
+
     return 0;
 
     QuickTest("C:\\test.db", 
